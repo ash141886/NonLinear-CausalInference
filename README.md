@@ -12,3 +12,8 @@ This repository provides a multi-file R project that:
 4. Runs experiments in parallel across a grid of parameters (number of variables, sample sizes).
 5. Saves results and produces plots in PDF and PNG formats.
 
+## Requirements
+
+Install the required R packages:
+
+install.packages(c("mgcv", "fastICA", "dplyr", "ggplot2", "gridExtra", "foreach", "doParallel"))
