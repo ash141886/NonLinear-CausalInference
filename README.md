@@ -1,6 +1,4 @@
-# Non-linear-Causal-Inference-with-GAM-and-HSIC
-
-Exploring Non-linear Causal Inference using GAM and HSIC
+# Exploring Non-linear Causal Inference using GAM and HSIC
 
 ## Overview
 This repository provides a multi-file R project that:
