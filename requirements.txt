@@ -1,0 +1,4 @@
+## Requirements
+
+Install the required R packages:
+install.packages(c("mgcv", "fastICA", "dplyr", "ggplot2", "gridExtra", "foreach", "doParallel"))
