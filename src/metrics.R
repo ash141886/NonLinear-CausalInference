@@ -1,3 +1,4 @@
+# Your existing calculate_dag_metrics_improved function
 calculate_dag_metrics_improved <- function(estimated_dag, true_dag) {
     n <- nrow(true_dag)
     TP_dir <- 0; FP_dir <- 0; FN_dir <- 0; misoriented <- 0; TN_dir <- 0
