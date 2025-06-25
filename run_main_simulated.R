@@ -15,7 +15,7 @@ sparsity <- 0.3
 noise_level <- 0.1
 gam_sigma <- 0.5
 threshold_percentile <- 0.3
-n_reps <- 100
+n_reps <- 50
 
 # Set up parallel processing
 num_cores <- detectCores() - 1
