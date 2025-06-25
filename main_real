@@ -8,8 +8,6 @@
 # -------------------------------------------------------------------
 # Step 1: Load Required Libraries
 # -------------------------------------------------------------------
-# Install required packages if not already installed:
-# install.packages(c("mgcv", "ggplot2", "dplyr", "tidyr", "pcalg", "fastICA", "gridExtra", "viridis"))
 
 library(mgcv)
 library(ggplot2)
