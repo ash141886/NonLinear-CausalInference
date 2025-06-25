@@ -1,4 +1,9 @@
 ## Requirements
 
 Install the required R packages:
-install.packages(c("mgcv", "fastICA", "dplyr", "ggplot2", "gridExtra", "foreach", "doParallel"))
+install.packages(c(
+  "mgcv", "ggplot2", "dplyr", "tidyr", 
+  "pcalg", "fastICA", "parallel", 
+  "doParallel", "gridExtra", "viridis"
+))
+
