@@ -2,7 +2,7 @@
 
 Install the required R packages:
 install.packages(c(
-  "mgcv", "ggplot2", "dplyr", "tidyr", 
+  "mgcv", "ggplot2", "dplyr", "tidyr", "foreach",
   "pcalg", "fastICA", "parallel", 
   "doParallel", "gridExtra", "viridis"
 ))
