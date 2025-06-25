@@ -1,3 +1,19 @@
+# Load required libraries
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(grid)
+library(foreach)
+library(doParallel)
+library(cowplot)  # Added for get_legend() function
+
+# Source your existing files
+source("src/data_generation.R")
+source("src/methods/proposed_method.R")
+source("src/methods/lingam.R")
+source("src/metrics.R")
+source("src/analysis.R")
+
 # Experiment parameters
 n_vars_range <- c(4,8, 12, 15)
 n_samples_range <- c(400, 800, 1200, 1500)
