@@ -29,6 +29,11 @@ results <- foreach(rep = 1:n_reps, .combine = rbind) %:%
                                  noise_level, gam_sigma, threshold_percentile)
     }
 
+
+# Save results
+write.csv(results, "results/experiment_results.csv", row.names = FALSE)
+
+
 # Plot results and display plots
 metrics <- c("Graph_Accuracy", "SHD", "F1_Score_dir", "Time")
 for (metric in metrics) {
