@@ -29,8 +29,9 @@ results <- foreach(rep = 1:n_reps, .combine = rbind) %:%
                                  noise_level, gam_sigma, threshold_percentile)
     }
 
-# Plot results
+# Plot results and display plots
 metrics <- c("Graph_Accuracy", "SHD", "F1_Score_dir", "Time")
 for (metric in metrics) {
-    plot_results(results, metric)
+    p <- plot_results(results, metric)
+    print(p)
 }
