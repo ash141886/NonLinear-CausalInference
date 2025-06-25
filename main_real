@@ -25,11 +25,12 @@ library(viridis)
 # -------------------------------------------------------------------
 # Step 2: Load and Preprocess Data
 # -------------------------------------------------------------------
-if (!file.exists("winequality-red.csv")) {
+if (!file.exists("data/winequality-red.csv")) {
     download.file("https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv",
-                  "winequality-red.csv")
+                  "data/winequality-red.csv")
 }
-wine_data <- read.csv("winequality-red.csv", sep = ";")
+wine_data <- read.csv("data/winequality-red.csv", sep = ";")
+
 wine_data <- as.data.frame(scale(wine_data)) # Standardize data
 
 cat("Wine data loaded and standardized.\n")
