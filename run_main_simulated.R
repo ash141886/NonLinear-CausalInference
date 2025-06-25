@@ -1,21 +1,12 @@
-source("src/data_generation.R")
-source("src/methods/proposed_method.R")
-source("src/methods/lingam.R")
-source("src/metrics.R")
-source("src/analysis.R")
-
-library(foreach)
-library(doParallel)
-
 # Experiment parameters
-n_vars_range <- c(4, 8, 12, 15)
-n_samples_range <- c(400, 800, 1200, 1500)
+n_vars_range <- c(4, 5, 6, 7)
+n_samples_range <- c(300, 400, 500, 560)
 nonlinearity <- 0.5
 sparsity <- 0.3
 noise_level <- 0.1
 gam_sigma <- 0.5
 threshold_percentile <- 0.3
-n_reps <- 50
+n_reps <- 3
 
 # Set up parallel processing
 num_cores <- detectCores() - 1
@@ -29,14 +20,27 @@ results <- foreach(rep = 1:n_reps, .combine = rbind) %:%
                                  noise_level, gam_sigma, threshold_percentile)
     }
 
+# Stop parallel processing
+stopImplicitCluster()
+
+# Create directories
+if (!dir.exists("results")) {
+    dir.create("results", recursive = TRUE)
+}
 
 # Save results
 write.csv(results, "results/experiment_results.csv", row.names = FALSE)
 
+# Create summary statistics
+summary_stats <- results %>%
+    group_by(Method, Variables, Samples) %>%
+    summarise(
+        across(c(F1_Score_dir, Graph_Accuracy, SHD, MSE, Time, Misoriented), 
+               mean, na.rm = TRUE),
+        .groups = "drop"
+    )
 
-# Plot results and display plots
-metrics <- c("Graph_Accuracy", "SHD", "F1_Score_dir", "Time")
-for (metric in metrics) {
-    p <- plot_results(results, metric)
-    print(p)
-}
+# Generate all plots
+plot_combined_results(summary_stats)
+
+cat("Experiment completed! Check 'plots/' directory for all generated plots.\n")
