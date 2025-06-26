@@ -1,53 +1,61 @@
 # =============================================================================
-# EXPERIMENT EXECUTION
+# Causal Discovery Simulation Experiment
 # =============================================================================
 
-cat("🚀 Starting FULLY CORRECTED Causal Discovery Experiment...\n\n")
+# --- 1. Load required packages ---
+library(dplyr)
+library(foreach)
+library(doParallel)
 
-# Experiment parameters - OPTIMIZED FOR SUCCESS
-n_vars_range <- c(4, 5, 6, 7)
-n_samples_range <- c(300, 400, 500, 560)
-nonlinearity <- 0.5      # High nonlinearity to show your method's strength
-sparsity <- 0.3
-noise_level <- 0.1
-gam_sigma <- 0.5
-threshold_percentile <- 0.1  # LOWERED for better edge detection
-n_reps <- 3
+# --- 2. Experimental Parameters ---
+n_vars_range <- c(4, 5, 6, 7)         # Number of variables
+n_samples_range <- c(300, 400, 500, 560) # Sample sizes
+nonlinearity <- 0.5                   # Nonlinearity strength
+sparsity <- 0.3                       # Proportion of zero edges
+noise_level <- 0.1                    # Noise standard deviation
+gam_sigma <- 0.5                      # Smoothing parameter for GAM
+threshold_percentile <- 0.1           # Edge detection threshold 
+n_reps <- 3                           # Number of repetitions per condition
 
-# Set up parallel processing
-num_cores <- detectCores() - 1
+# --- 3. Parallel Processing Setup ---
+num_cores <- max(1, detectCores() - 1)
 registerDoParallel(cores = num_cores)
 
-# Run experiment
-cat("Running", n_reps, "repetitions across", length(n_vars_range) * length(n_samples_range), "conditions...\n")
+# --- 4. Main Experiment Loop ---
 results <- foreach(rep = 1:n_reps, .combine = rbind) %:%
     foreach(n_vars = n_vars_range, .combine = rbind) %:%
     foreach(n_samples = n_samples_range, .combine = rbind) %dopar% {
-        analyze_causal_structure(n_vars, n_samples, nonlinearity, sparsity, 
-                                 noise_level, gam_sigma, threshold_percentile)
+        analyze_causal_structure(
+            n_vars      = n_vars,
+            n_samples   = n_samples,
+            nonlinearity= nonlinearity,
+            sparsity    = sparsity,
+            noise_level = noise_level,
+            gam_sigma   = gam_sigma,
+            threshold_percentile = threshold_percentile
+        )
     }
 
-# Stop parallel processing
 stopImplicitCluster()
 
-# Create directories
-if (!dir.exists("results")) {
-    dir.create("results", recursive = TRUE)
-}
+# --- 5. Results Saving ---
+if (!dir.exists("results")) dir.create("results", recursive = TRUE)
+write.csv(results, "results/experiment_results.csv", row.names = FALSE)
 
-# Save results
-write.csv(results, "results/experiment_results_FULLY_CORRECTED.csv", row.names = FALSE)
-
-# Create summary statistics
+# --- 6. Summary Statistics ---
 summary_stats <- results %>%
     group_by(Method, Variables, Samples) %>%
     summarise(
-        across(c(F1_Score_dir, Graph_Accuracy, SHD, MSE, Time, Misoriented), 
-               mean, na.rm = TRUE),
+        F1_Score_dir = mean(F1_Score_dir, na.rm = TRUE),
+        Graph_Accuracy = mean(Graph_Accuracy, na.rm = TRUE),
+        SHD = mean(SHD, na.rm = TRUE),
+        MSE = mean(MSE, na.rm = TRUE),
+        Time = mean(Time, na.rm = TRUE),
+        Misoriented = mean(Misoriented, na.rm = TRUE),
         .groups = "drop"
     )
 
-
-# Generate all plots
-cat("\n📊 Generating plots...\n")
+# --- 7. Visualization ---
 plot_combined_results(summary_stats)
+
+# --- End of script ---
