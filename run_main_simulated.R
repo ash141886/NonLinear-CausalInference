@@ -8,14 +8,14 @@ library(foreach)
 library(doParallel)
 
 # --- 2. Experimental Parameters ---
-n_vars_range <- c(4, 5, 6, 7)         # Number of variables
-n_samples_range <- c(300, 400, 500, 560) # Sample sizes
-nonlinearity <- 0.5                   # Nonlinearity strength
-sparsity <- 0.3                       # Proportion of zero edges
-noise_level <- 0.1                    # Noise standard deviation
-gam_sigma <- 0.5                      # Smoothing parameter for GAM
-threshold_percentile <- 0.1           # Edge detection threshold 
-n_reps <- 3                           # Number of repetitions per condition
+n_vars_range <- c(4, 5, 6, 7)
+n_samples_range <- c(300, 400, 500, 560)
+nonlinearity <- 0.5
+sparsity <- 0.3
+noise_level <- 0.1
+gam_sigma <- 0.5
+threshold_percentile <- 0.1
+n_reps <- 3
 
 # --- 3. Parallel Processing Setup ---
 num_cores <- max(1, detectCores() - 1)
