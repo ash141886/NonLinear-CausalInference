@@ -18,7 +18,7 @@ This repository provides a multi-file R project that:
 │ │ ├── proposed_method.R
 │ │ └── lingam.R
 │ ├── metrics.R
-│ └── analysis.R
+│ └── plotting.R
 ├── scripts/
 │ └── run_experiment.R
 ├── results/
