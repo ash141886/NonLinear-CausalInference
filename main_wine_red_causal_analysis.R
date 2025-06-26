@@ -1,8 +1,8 @@
 # ===================================================================
-# Causal Discovery on Wine Data
+# Causal Discovery on Wine Data (red)
 #
 # Full hyperparameter tuning and performance comparison of
-# the proposed methods.
+# the proposed methods on red wine data.
 # Reports Precision, Recall, F1-Score, SHD, Accuracy, and MSE.
 # ===================================================================
 
