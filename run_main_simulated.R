@@ -7,6 +7,13 @@ library(dplyr)
 library(foreach)
 library(doParallel)
 
+# Source your existing files
+source("src/data_generation.R")
+source("src/methods/proposed_method.R")
+source("src/methods/lingam.R")
+source("src/metrics.R")
+source("src/analysis.R")
+
 # --- 2. Experimental Parameters ---
 n_vars_range <- c(4, 5, 6, 7)
 n_samples_range <- c(300, 400, 500, 560)
