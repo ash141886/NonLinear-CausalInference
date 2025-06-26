@@ -1,8 +1,9 @@
 # ===================================================================
-# Causal Discovery on Wine Data 
+# Causal Discovery on Wine Data
 #
-# - Restores the full hyperparameter tuning range for comprehensive analysis.
-# - Final results table reports Precision, Recall, F1-Score, SHD, Accuracy, and MSE.
+# Full hyperparameter tuning and performance comparison of
+# the proposed methods.
+# Reports Precision, Recall, F1-Score, SHD, Accuracy, and MSE.
 # ===================================================================
 
 # -------------------------------------------------------------------
@@ -23,13 +24,13 @@ library(viridis)
 # -------------------------------------------------------------------
 # Step 2: Load and Preprocess Data
 # -------------------------------------------------------------------
+
 if (!file.exists("data/winequality-red.csv")) {
     download.file("https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv",
                   "data/winequality-red.csv")
 }
 wine_data <- read.csv("data/winequality-red.csv", sep = ";")
-
-wine_data <- as.data.frame(scale(wine_data)) # Standardize data
+wine_data <- as.data.frame(scale(wine_data))
 
 cat("Wine data loaded and standardized.\n")
 cat("Dimensions:", dim(wine_data), "\n")
@@ -39,13 +40,11 @@ cat("Variables:", paste(colnames(wine_data), collapse = ", "), "\n\n")
 # Step 3: Define Helper and Core Algorithm Functions
 # -------------------------------------------------------------------
 
-# RBF kernel function for HSIC
 rbf_kernel <- function(x, sigma = 1) {
     dist_matrix <- as.matrix(dist(x))
     exp(-dist_matrix^2 / (2 * sigma^2))
 }
 
-# HSIC calculation (Hilbert-Schmidt Independence Criterion)
 hsic <- function(x, y, sigma = NULL) {
     n <- length(x)
     if (is.null(sigma)) {
@@ -58,17 +57,14 @@ hsic <- function(x, y, sigma = NULL) {
     sum(H %*% Kx %*% H * Ky) / n^2
 }
 
-# Proposed method using dynamic k adjustment in GAM
 run_proposed_method_wine <- function(data, sigma = 1, threshold_percentile = 0.8, gam_k_max = 10) {
     n_vars <- ncol(data)
     var_names <- colnames(data)
     hsic_matrix <- matrix(0, n_vars, n_vars)
     residuals_list <- list()
-    
     for (i in 1:n_vars) {
         target_var_name <- var_names[i]
         predictor_indices <- setdiff(1:n_vars, i)
-        
         formula_terms <- c()
         for (pred_idx in predictor_indices) {
             pred_name <- var_names[pred_idx]
@@ -91,7 +87,6 @@ run_proposed_method_wine <- function(data, sigma = 1, threshold_percentile = 0.8
             residuals_list[[i]] <- rnorm(nrow(data))
         }
     }
-    
     for (i in 1:(n_vars - 1)) {
         for (j in (i + 1):n_vars) {
             hsic_val <- tryCatch(hsic(residuals_list[[i]], residuals_list[[j]], sigma), error = function(e) 0)
@@ -105,7 +100,6 @@ run_proposed_method_wine <- function(data, sigma = 1, threshold_percentile = 0.8
     estimated_adj_matrix
 }
 
-# ICA-based LiNGAM implementation for comparison
 run_lingam_algorithm_wine <- function(data) {
     start_time <- Sys.time()
     dag_result <- tryCatch({
@@ -142,27 +136,23 @@ get_wine_true_dag <- function() {
     true_dag
 }
 
-# Undirected structural metrics, including Accuracy and MSE
 calculate_dag_metrics_undirected <- function(estimated_dag, true_dag) {
     estimated_undirected <- estimated_dag | t(estimated_dag)
     diag(estimated_undirected) <- 0
     true_undirected <- true_dag | t(true_dag)
     diag(true_undirected) <- 0
-    
     tp <- sum(estimated_undirected == 1 & true_undirected == 1) / 2
     fp <- sum(estimated_undirected == 1 & true_undirected == 0) / 2
     fn <- sum(estimated_undirected == 0 & true_undirected == 1) / 2
     n_vars <- ncol(true_dag)
     total_possible_edges <- n_vars * (n_vars - 1) / 2
     tn <- total_possible_edges - tp - fp - fn
-
     precision <- ifelse((tp + fp) == 0, 0, tp / (tp + fp))
     recall <- ifelse((tp + fn) == 0, 0, tp / (tp + fn))
     f1_score <- ifelse((precision + recall) == 0, 0, 2 * (precision * recall) / (precision + recall))
     shd <- fp + fn
     accuracy <- (tp + tn) / total_possible_edges
     mse <- mean((true_undirected - estimated_undirected)^2)
-    
     c(Precision = precision, Recall = recall, F1_Score = f1_score, SHD = shd, Accuracy = accuracy, MSE = mse)
 }
 
@@ -213,11 +203,9 @@ cat("=================================================================\n")
 cat("=== WINE QUALITY CAUSAL DISCOVERY: FULL ANALYSIS ===\n")
 cat("=================================================================\n\n")
 
-# Part 1: Hyperparameter tuning
 tuning_output <- tune_wine_parameters_full()
 best_params <- tuning_output$best_params
 
-# Part 2: Run final analysis using optimal parameters
 cat("\nRunning final analysis with optimal parameters.\n")
 best_thresh <- best_params$threshold
 best_sigma <- best_params$sigma
@@ -225,7 +213,6 @@ best_k_max <- best_params$k_max
 final_results_list <- list()
 true_dag <- get_wine_true_dag()
 
-# 1. Proposed Method
 cat("Analyzing with the proposed method...\n")
 start_time_prop <- Sys.time()
 prop_dag <- run_proposed_method_wine(wine_data, best_sigma, best_thresh, best_k_max)
@@ -233,13 +220,11 @@ prop_time <- as.numeric(difftime(Sys.time(), start_time_prop, units = "secs"))
 prop_metrics <- calculate_dag_metrics_undirected(prop_dag, true_dag)
 final_results_list[["Proposed"]] <- c(prop_metrics, Time_sec = prop_time)
 
-# 2. LiNGAM (baseline)
 cat("Analyzing with LiNGAM...\n")
 lingam_output <- run_lingam_algorithm_wine(wine_data)
 lingam_metrics <- calculate_dag_metrics_undirected(lingam_output$dag, true_dag)
 final_results_list[["LiNGAM"]] <- c(lingam_metrics, Time_sec = lingam_output$time)
 
-# Part 3: Display final results
 cat("\n=========================================================\n")
 cat("=== FINAL PERFORMANCE COMPARISON (FULL ANALYSIS) ===\n")
 cat("=========================================================\n")
