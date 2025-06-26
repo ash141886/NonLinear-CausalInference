@@ -13,18 +13,19 @@ This repository provides a multi-file R project that:
 
 .
 ├── src/
-│ ├── data_generation.R
-│ ├── methods/
-│ │ ├── proposed_method.R
-│ │ └── lingam.R
-│ ├── metrics.R
-│ └── plotting.R
-├── scripts/
-│ └── run_experiment.R
+│   ├── data_generation.R
+│   ├── methods/
+│   │   ├── proposed_method.R
+│   │   └── lingam.R
+│   ├── metrics.R
+│   └── plotting.R
+├── main_causal_analysis_simulated.R
+├── main_wine_red_causal_analysis.R
+├── main_wine_white_causal_analysis.R
 ├── results/
-│ └── .gitkeep
+│   └── .gitkeep
 ├── plots/
-│ └── .gitkeep
+│   └── .gitkeep
 ├── README.md
 ├── .gitignore
 └── requirements.txt
@@ -34,12 +35,14 @@ This repository provides a multi-file R project that:
 
 # Causal Discovery Simulation Experiment
 
-This repository provides code for nonlinear causal inference using Generalized Additive Models (GAM) and the Hilbert-Schmidt Independence Criterion (HSIC), supporting both simulation and real data analysis.
+This repository provides code for nonlinear causal inference using Generalized Additive Models (GAM) and the Hilbert-Schmidt Independence Criterion (HSIC), supporting both simulation and real data analysis on the UCI Wine Quality datasets.
 
 ## Quick Start
 
-Copy and run the following code in your R console to clone the repository, install all required packages, and execute the analysis.  
-**For simulation, run the `run_main_simulated.R` script. For real data, run `run_main_real.R`.**
+Copy and run the following code in your R console to **clone the repository**, **install all required packages**, and execute the analysis.
+
+
+# Clone repository, install all packages, and run any analysis (simulated, red, or white wine) in one go
 
 ```r
 if (!requireNamespace("git2r", quietly = TRUE)) install.packages("git2r")
@@ -50,6 +53,7 @@ if (!dir.exists(local_path)) {
   git2r::clone(url = repo_url, local_path = local_path)
 }
 setwd(local_path)
+
 pkgs_needed <- c(
   "dplyr",
   "tidyr",
@@ -66,8 +70,13 @@ for (pkg in pkgs_needed) {
   suppressPackageStartupMessages(library(pkg, character.only = TRUE))
 }
 
-# For simulation study
-source("run_main_simulated.R")
+# --- Run any analysis script as needed ---
+# For simulated data:
+source("main_causal_analysis_simulated.R")
 
-# For real data analysis (uncomment the following line)
-# source("run_main_real.R")
+# For red wine data:
+# source("main_wine_red_causal_analysis.R")
+
+# For white wine data:
+# source("main_wine_white_causal_analysis.R")
+
