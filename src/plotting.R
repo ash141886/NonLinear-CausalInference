@@ -12,7 +12,7 @@ plot_combined_results <- function(results) {
         # Legend is removed from this plot to avoid duplication in the final combined image.
         p1 <- ggplot(results, aes(x = Samples, y = .data[[metric]],
                                   linetype = Method, shape = Method, color = Method, group = Method)) +
-            geom_line(size = 0.4) + # Made line thicker
+            geom_line(size = 0.5) + # Made line thicker
             geom_point(size = 1.5) +
             facet_wrap(~ Variables, scales = "free_y", nrow = 1,
                        labeller = labeller(Variables = function(x) paste("Variables:", x))) +
@@ -36,7 +36,7 @@ plot_combined_results <- function(results) {
         # This plot retains the legend, which will be displayed at the bottom of the combined plot.
         p2 <- ggplot(results, aes(x = Variables, y = .data[[metric]],
                                   linetype = Method, shape = Method, color = Method, group = Method)) +
-            geom_line(size = 0.4) + # Made line thicker
+            geom_line(size = 0.5) + # Made line thicker
             geom_point(size = 1.5) +
             facet_wrap(~ Samples, scales = "free_y", nrow = 1,
                        labeller = labeller(Samples = function(x) paste("Samples:", x))) +
