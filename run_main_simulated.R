@@ -22,17 +22,16 @@ source("src/analysis.R")
 
 
 # -------------------------------------------
-# -------------------------------------------
 # Experiment Grid Parameters
 # -------------------------------------------
-n_vars_range <- c(4, 8, 12, 15)
-n_samples_range <- c(400, 800, 1200, 1500)
+n_vars_range <- c(4, 5, 6, 7)
+n_samples_range <- c(300, 400, 500, 560)
 nonlinearity <- 0.5
 sparsity <- 0.3
 noise_level <- 0.1
 gam_sigma <- 0.5
 threshold_percentile <- 0.1
-n_reps <- 50
+n_reps <- 10
 
 # -------------------------------------------
 # Parallel Experiment Execution
