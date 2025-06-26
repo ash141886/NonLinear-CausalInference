@@ -28,3 +28,46 @@ This repository provides a multi-file R project that:
 ├── README.md
 ├── .gitignore
 └── requirements.txt
+
+
+
+
+# Causal Discovery Simulation Experiment
+
+This repository provides code for nonlinear causal inference using Generalized Additive Models (GAM) and the Hilbert-Schmidt Independence Criterion (HSIC), supporting both simulation and real data analysis.
+
+## Quick Start
+
+Copy and run the following code in your R console to clone the repository, install all required packages, and execute the analysis.  
+**For simulation, run the `run_main_simulated.R` script. For real data, run `run_main_real.R`.**
+
+```r
+if (!requireNamespace("git2r", quietly = TRUE)) install.packages("git2r")
+library(git2r)
+repo_url <- "https://github.com/ash141886/Exploring-Non-linear-Causal-Inference-using-GAM-and-HSIC.git"
+local_path <- "Exploring-Non-linear-Causal-Inference-using-GAM-and-HSIC"
+if (!dir.exists(local_path)) {
+  git2r::clone(url = repo_url, local_path = local_path)
+}
+setwd(local_path)
+pkgs_needed <- c(
+  "dplyr",
+  "tidyr",
+  "ggplot2",
+  "foreach",
+  "doParallel",
+  "parallel",
+  "gridExtra",
+  "mgcv",
+  "fastICA"
+)
+for (pkg in pkgs_needed) {
+  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+  suppressPackageStartupMessages(library(pkg, character.only = TRUE))
+}
+
+# For simulation study
+source("run_main_simulated.R")
+
+# For real data analysis (uncomment the following line)
+# source("run_main_real.R")
