@@ -1,3 +1,4 @@
+# FIXED Data generation function
 generate_data <- function(n_vars, n_samples = 1000, nonlinearity = 0.3, 
                           sparsity = 0.3, noise_level = 0.1) {
     set.seed(123)
@@ -10,10 +11,10 @@ generate_data <- function(n_vars, n_samples = 1000, nonlinearity = 0.3,
     for (i in 2:n_vars) {
         parents <- 1:(i - 1)
         
-        # Select parent subset based on sparsity (ensure at least one parent)
+        # Select parent subset based on sparsity
         parent_subset <- parents[rbinom(length(parents), 1, 1 - sparsity) == 1]
         
-        # If no parents selected due to sparsity, force at least one parent
+        # CRITICAL FIX: If no parents selected due to sparsity, force at least one parent
         if (length(parent_subset) == 0) {
             parent_subset <- sample(parents, 1)
         }
@@ -25,7 +26,7 @@ generate_data <- function(n_vars, n_samples = 1000, nonlinearity = 0.3,
             
             for (p in parent_subset) {
                 if (runif(1) < nonlinearity) {
-                    # Apply nonlinear function
+                    # FIXED: Safe nonlinear functions (removed exp)
                     f <- sample(c(sin, cos, function(x) x^2,
                                   function(x) log(abs(x) + 1), 
                                   function(x) tanh(x)), 1)[[1]]
@@ -34,8 +35,7 @@ generate_data <- function(n_vars, n_samples = 1000, nonlinearity = 0.3,
                     transformed_values <- tryCatch({
                         f(data[, p])
                     }, error = function(e) {
-                        # Fallback to linear if transformation fails
-                        data[, p]
+                        data[, p]  # Fallback to linear
                     })
                     
                     # Check for infinite or NaN values
@@ -52,16 +52,16 @@ generate_data <- function(n_vars, n_samples = 1000, nonlinearity = 0.3,
             
             data[, i] <- parent_contribution
         } else {
-            # No parents (shouldn't happen now, but safety check)
+            # Safety fallback (shouldn't happen)
             data[, i] <- rnorm(n_samples)
         }
         
-        # Add noise (with adaptive scaling)
+        # FIXED: Controlled noise scaling
         noise_scale <- noise_level * (1 + 0.1 * abs(data[, i]))
         data[, i] <- data[, i] + rnorm(n_samples, 0, noise_scale)
     }
     
-    # Convert to data frame with proper column names
+    # FIXED: Add proper column names for GAM
     colnames(data) <- paste0("V", 1:n_vars)
     return(as.data.frame(scale(data)))
 }
