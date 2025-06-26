@@ -47,51 +47,7 @@ summary_stats <- results %>%
         .groups = "drop"
     )
 
-# Print performance summary
-cat("\n", paste(rep("=", 60), collapse=""), "\n")
-cat("🎯 PERFORMANCE SUMMARY\n")
-cat(paste(rep("=", 60), collapse=""), "\n")
-
-performance_summary <- summary_stats %>%
-    group_by(Method) %>%
-    summarise(
-        Avg_F1 = round(mean(F1_Score_dir, na.rm = TRUE), 3),
-        Avg_Accuracy = round(mean(Graph_Accuracy, na.rm = TRUE), 3),
-        Avg_Misoriented = round(mean(Misoriented, na.rm = TRUE), 1),
-        Avg_Time = round(mean(Time, na.rm = TRUE), 3),
-        .groups = "drop"
-    )
-
-print(performance_summary)
-
-# Check if your method is winning
-proposed_f1 <- performance_summary$Avg_F1[performance_summary$Method == "Proposed Method"]
-lingam_f1 <- performance_summary$Avg_F1[performance_summary$Method == "LiNGAM"]
-
-cat("\n")
-if (proposed_f1 > lingam_f1) {
-    cat("🎉 SUCCESS! Your Proposed Method CRUSHES LiNGAM on nonlinear data!\n")
-    cat("Proposed Method F1:", proposed_f1, "vs LiNGAM F1:", lingam_f1, "\n")
-    cat("Your method is", round((proposed_f1 / lingam_f1 - 1) * 100, 1), "% better!\n")
-} else {
-    cat("❌ Issue: LiNGAM is still winning. Check threshold or sigma parameters.\n")
-}
 
 # Generate all plots
 cat("\n📊 Generating plots...\n")
 plot_combined_results(summary_stats)
-
-cat("\n✅ Experiment completed! Check 'plots/' directory for all generated plots.\n")
-cat("📁 Results saved to 'results/experiment_results_FULLY_CORRECTED.csv'\n")
-cat("\n🚀 Your method should now be absolutely dominating on nonlinear data!\n")
-
-# =============================================================================
-# QUICK VERIFICATION TEST
-# =============================================================================
-
-cat("\n🔍 Running quick verification test...\n")
-test_data <- generate_data(4, 100, 0.5, 0.3, 0.1)
-cat("Data generation successful - Column names:", paste(colnames(test_data), collapse = ", "), "\n")
-cat("Data range: Min =", round(min(test_data), 3), "Max =", round(max(test_data), 3), "\n")
-cat("Any infinite values:", any(!is.finite(as.matrix(test_data))), "\n")
-cat("✅ All systems ready to go!\n")
