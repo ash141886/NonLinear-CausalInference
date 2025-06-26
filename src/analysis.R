@@ -2,14 +2,17 @@
 # Causal Discovery Project: Plotting Functions
 # =============================================================================
 
+library(ggplot2)
+library(gridExtra)
+
 plot_combined_results <- function(results) {
     metrics <- c("F1_Score_dir", "Graph_Accuracy", "SHD", "MSE", "Time", "Misoriented")
     
     for (metric in metrics) {
         p1 <- ggplot(results, aes(x = Samples, y = .data[[metric]],
                                   linetype = Method, shape = Method, color = Method, group = Method)) +
-            geom_line(linewidth = 0.4) +
-            geom_point(size = 2) +
+            geom_line(linewidth = 0.4) +    # <- use linewidth, not size
+            geom_point(size = 2) +          # <- size is correct for points
             facet_wrap(~ Variables, scales = "free_y", nrow = 1,
                        labeller = labeller(Variables = function(x) paste("Variables:", x))) +
             labs(title = paste(metric, "vs. Sample Size"),
@@ -33,8 +36,8 @@ plot_combined_results <- function(results) {
         
         p2 <- ggplot(results, aes(x = Variables, y = .data[[metric]],
                                   linetype = Method, shape = Method, color = Method, group = Method)) +
-            geom_line(linewidth = 0.4) +
-            geom_point(size = 2) +
+            geom_line(linewidth = 0.4) +    # <- use linewidth, not size
+            geom_point(size = 2) +          # <- size is correct for points
             facet_wrap(~ Samples, scales = "free_y", nrow = 1,
                        labeller = labeller(Samples = function(x) paste("Samples:", x))) +
             labs(title = paste(metric, "vs. Number of Variables"),
