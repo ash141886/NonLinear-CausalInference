@@ -1,12 +1,14 @@
-# Enhanced plotting function
+# =============================================================================
+# Causal Discovery Project: Plotting Functions
+# =============================================================================
+
 plot_combined_results <- function(results) {
     metrics <- c("F1_Score_dir", "Graph_Accuracy", "SHD", "MSE", "Time", "Misoriented")
     
     for (metric in metrics) {
-        # Plot vs Sample Size (Fixed Variable Counts)
         p1 <- ggplot(results, aes(x = Samples, y = .data[[metric]],
                                   linetype = Method, shape = Method, color = Method, group = Method)) +
-            geom_line(size = 1.2) +
+            geom_line(linewidth = 1.2) +
             geom_point(size = 3) +
             facet_wrap(~ Variables, scales = "free_y", nrow = 1,
                        labeller = labeller(Variables = function(x) paste("Variables:", x))) +
@@ -29,10 +31,9 @@ plot_combined_results <- function(results) {
             scale_color_manual(name = "Method", 
                                values = c("LiNGAM" = "#E31A1C", "Proposed Method" = "#1F78B4"))
         
-        # Plot vs Number of Variables (Fixed Sample Sizes)
         p2 <- ggplot(results, aes(x = Variables, y = .data[[metric]],
                                   linetype = Method, shape = Method, color = Method, group = Method)) +
-            geom_line(size = 1.2) +
+            geom_line(linewidth = 1.2) +
             geom_point(size = 3) +
             facet_wrap(~ Samples, scales = "free_y", nrow = 1,
                        labeller = labeller(Samples = function(x) paste("Samples:", x))) +
@@ -55,10 +56,8 @@ plot_combined_results <- function(results) {
             scale_color_manual(name = "Method", 
                                values = c("LiNGAM" = "#E31A1C", "Proposed Method" = "#1F78B4"))
         
-        # Combine both plots
         combined_plot <- grid.arrange(p1, p2, nrow = 2)
         
-        # Save plots
         if (!dir.exists("plots")) {
             dir.create("plots", recursive = TRUE)
         }
