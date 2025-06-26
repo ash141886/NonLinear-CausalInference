@@ -1,5 +1,5 @@
 # =============================================================================
-# Causal Discovery Project: Plotting Functions (Single Shared Legend)
+# Causal Discovery Project: Plotting Functions (Single Shared Legend, Clean Console)
 # =============================================================================
 
 library(ggplot2)
@@ -52,23 +52,20 @@ plot_combined_results <- function(results) {
             scale_shape_manual(name = "Method", values = c("LiNGAM" = 16, "Proposed Method" = 17)) +
             scale_color_manual(name = "Method", values = c("LiNGAM" = "#E31A1C", "Proposed Method" = "#1F78B4"))
 
-        # Extract the legend from one plot
-        legend <- cowplot::get_legend(p1)
+        # Extract legend (suppress warning about multiple guides)
+        legend <- suppressWarnings(cowplot::get_legend(p1))
 
         # Remove legends from both plots
         p1_clean <- p1 + theme(legend.position = "none")
         p2_clean <- p2 + theme(legend.position = "none")
 
-        # Arrange plots with a single shared legend below
+        # Combine plots and add legend once at bottom
         combined_plot <- cowplot::plot_grid(
             p1_clean, p2_clean, ncol = 1, align = "v", rel_heights = c(1, 1)
         )
         final_plot <- cowplot::plot_grid(combined_plot, legend, ncol = 1, rel_heights = c(1, 0.08))
 
-        if (!dir.exists("plots")) {
-            dir.create("plots", recursive = TRUE)
-        }
-
+        if (!dir.exists("plots")) dir.create("plots", recursive = TRUE)
         ggsave(paste0("plots/combined_line_plot_", metric, ".png"),
                final_plot, width = 14, height = 10, dpi = 300)
         ggsave(paste0("plots/combined_line_plot_", metric, ".pdf"),
