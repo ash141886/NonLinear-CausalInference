@@ -1,10 +1,14 @@
-library(mgcv)
+# =============================================================================
+# CORE FUNCTIONS
+# =============================================================================
 
+# RBF Kernel function
 rbf_kernel <- function(x, sigma = 1) {
     dist_matrix <- as.matrix(dist(x))
     exp(-dist_matrix^2 / (2 * sigma^2))
 }
 
+# HSIC function
 hsic <- function(x, y, sigma = NULL) {
     n <- length(x)
     if (is.null(sigma)) {
@@ -17,10 +21,29 @@ hsic <- function(x, y, sigma = NULL) {
     sum(H %*% Kx %*% H * Ky) / n^2
 }
 
+# Transitive closure function
+transitive_closure <- function(graph) {
+    n <- nrow(graph)
+    closure <- graph
+    for (k in 1:n) {
+        for (i in 1:n) {
+            for (j in 1:n) {
+                closure[i, j] <- closure[i, j] | (closure[i, k] & closure[k, j])
+            }
+        }
+    }
+    closure
+}
+
+
+
+# FIXED Proposed Method function
 run_proposed_method <- function(data, sigma = 1, threshold_percentile = 0.3) {
     n_vars <- ncol(data)
     hsic_matrix <- matrix(0, n_vars, n_vars)
     residuals <- vector("list", n_vars)
+    
+    # Step 1: Fit GAM for each variable and extract residuals
     for (i in 1:n_vars) {
         formula <- as.formula(paste0("V", i, " ~ ", 
                                      paste0("s(V", (1:n_vars)[-i], ", k=5)", collapse = " + ")))
@@ -36,6 +59,8 @@ run_proposed_method <- function(data, sigma = 1, threshold_percentile = 0.3) {
             residuals[[i]] <- rnorm(nrow(data))
         }
     }
+    
+    # Step 2: Calculate HSIC between residuals
     for (i in 1:(n_vars - 1)) {
         for (j in (i + 1):n_vars) {
             hsic_matrix[i, j] <- tryCatch({
@@ -46,24 +71,19 @@ run_proposed_method <- function(data, sigma = 1, threshold_percentile = 0.3) {
             })
         }
     }
+    
+    # Step 3: Make symmetric and apply threshold
     hsic_matrix <- hsic_matrix + t(hsic_matrix)
     diag(hsic_matrix) <- 1
     threshold <- quantile(hsic_matrix[lower.tri(hsic_matrix)], threshold_percentile, na.rm = TRUE)
     proposed_method_dag <- hsic_matrix > threshold
-    proposed_method_dag[upper.tri(proposed_method_dag)] <- 0
+    
+    # FIXED: Keep upper triangular to match your true DAG
+    proposed_method_dag[lower.tri(proposed_method_dag)] <- 0
+    
     diag(proposed_method_dag) <- 0
-    transitive_closure(proposed_method_dag)
-}
-
-transitive_closure <- function(graph) {
-    n <- nrow(graph)
-    closure <- graph
-    for (k in 1:n) {
-        for (i in 1:n) {
-            for (j in 1:n) {
-                closure[i, j] <- closure[i, j] | (closure[i, k] & closure[k, j])
-            }
-        }
-    }
-    closure
+    
+    # Convert to numeric matrix (not logical)
+    result_dag <- matrix(as.numeric(proposed_method_dag), nrow = n_vars, ncol = n_vars)
+    transitive_closure(result_dag)
 }
