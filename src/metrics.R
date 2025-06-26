@@ -1,4 +1,10 @@
-# Metrics calculation function
+# =============================================================================
+# Causal Discovery Project: Metrics and Analysis Functions
+# =============================================================================
+
+# ----------------------------------------------------------------------------- 
+# Metrics Calculation Function
+# -----------------------------------------------------------------------------
 calculate_dag_metrics_improved <- function(estimated_dag, true_dag) {
     n <- nrow(true_dag)
     TP_dir <- 0; FP_dir <- 0; FN_dir <- 0; misoriented <- 0; TN_dir <- 0
@@ -36,19 +42,16 @@ calculate_dag_metrics_improved <- function(estimated_dag, true_dag) {
       MSE = MSE, MAE = MAE)
 }
 
-
-
-# FIXED analyze_causal_structure function
+# ----------------------------------------------------------------------------- 
+# Main Experiment Analysis Function
+# -----------------------------------------------------------------------------
 analyze_causal_structure <- function(n_vars, n_samples, nonlinearity = 0.3,
                                      sparsity = 0.3, noise_level = 0.1,
                                      gam_sigma = 1, threshold_percentile = 0.3) {
     cat("Running analysis for", n_vars, "variables and", n_samples, "samples...\n")
     data <- generate_data(n_vars, n_samples, nonlinearity, sparsity, noise_level)
-    
-    # FIXED: Match the true DAG to what generate_data actually creates
     true_dag <- matrix(0, n_vars, n_vars)
-    true_dag[upper.tri(true_dag)] <- 1  # FIXED: upper triangular
-    
+    true_dag[upper.tri(true_dag)] <- 1
     methods <- c("Proposed Method", "LiNGAM")
     results <- data.frame(Method = methods, Time = NA, stringsAsFactors = FALSE)
     for (method in methods) {
@@ -56,7 +59,6 @@ analyze_causal_structure <- function(n_vars, n_samples, nonlinearity = 0.3,
         start_time <- Sys.time()
         if (method == "Proposed Method") {
             dag <- tryCatch({
-                # FIXED: Use correct parameter names
                 run_proposed_method(data, sigma = gam_sigma, threshold_percentile = threshold_percentile)
             }, error = function(e) {
                 cat("Error in Proposed Method:", e$message, "\n")
