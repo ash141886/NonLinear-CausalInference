@@ -47,8 +47,8 @@ Copy and run the following code in your R console to **clone the repository**, *
 ```r
 if (!requireNamespace("git2r", quietly = TRUE)) install.packages("git2r")
 library(git2r)
-repo_url <- "https://github.com/ash141886/Exploring-Non-linear-Causal-Inference-using-GAM-and-HSIC.git"
-local_path <- "Exploring-Non-linear-Causal-Inference-using-GAM-and-HSIC"
+repo_url <- "https://github.com/ash141886/NonLinear-CausalInference.git"
+local_path <- "NonLinear-CausalInference"
 if (!dir.exists(local_path)) {
   git2r::clone(url = repo_url, local_path = local_path)
 }
@@ -79,4 +79,3 @@ source("main_causal_analysis_simulated.R")
 
 # For white wine data:
 # source("main_wine_white_causal_analysis.R")
-
