@@ -56,6 +56,12 @@ plot_combined_results <- function(results) {
             scale_color_manual(name = "Method",
                               values = c("LiNGAM" = "#E31A1C", "Proposed Method" = "#1F78B4"))
 
+        # Force y-axis to start at 0 for F1_Score_dir and Graph_Accuracy
+        if (metric %in% c("F1_Score_dir", "Graph_Accuracy")) {
+            p1 <- p1 + scale_y_continuous(limits = c(0, NA), expand = c(0, 0))
+            p2 <- p2 + scale_y_continuous(limits = c(0, NA), expand = c(0, 0))
+        }
+
         combined_plot <- grid.arrange(p1, p2, nrow = 2)
 
         if (!dir.exists("plots")) {
