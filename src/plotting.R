@@ -1,5 +1,5 @@
 # =============================================================================
-# Causal Discovery Project: Plotting Functions
+# Causal Discovery Project: Plotting Functions 
 # =============================================================================
 
 library(ggplot2)
