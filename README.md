@@ -1,4 +1,4 @@
-# Exploring Non-linear Causal Inference using GAM and HSIC
+# Non-linear Causal Inference in Observational Data using Additive Models and Kernel-based Independence Testing
 
 ## Overview
 This repository provides a multi-file R project that:
