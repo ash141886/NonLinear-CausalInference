@@ -4,11 +4,10 @@
 This repository provides a multi-file R project that:
 1. Generates synthetic data with configurable nonlinearity, sparsity, and noise.
 2. Implements two causal discovery methods:
-   - Proposed Method (GAM + HSIC threshold)
+   - Proposed Method (additive models + HSIC threshold)
    - LiNGAM (via `fastICA`)
 3. Calculates metrics (Graph Accuracy, SHD, Misoriented Edges, Recall, F1-Score, MSE, and Execution Time) to compare performance.
 4. Runs experiments in parallel across a grid of parameters (number of variables, sample sizes).
-5. Saves results and produces plots in PDF and PNG formats.
 
 
 .
@@ -21,7 +20,6 @@ This repository provides a multi-file R project that:
 │   └── plotting.R
 ├── main_causal_analysis_simulated.R
 ├── main_wine_red_causal_analysis.R
-├── main_wine_white_causal_analysis.R
 ├── results/
 │   └── .gitkeep
 ├── plots/
@@ -75,7 +73,5 @@ for (pkg in pkgs_needed) {
 source("main_causal_analysis_simulated.R")
 
 # For red wine data:
-# source("main_wine_red_causal_analysis.R")
+source("main_wine_red_causal_analysis.R")
 
-# For white wine data:
-# source("main_wine_white_causal_analysis.R")
