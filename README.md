@@ -40,7 +40,7 @@ This repository provides code for nonlinear causal inference using Generalized A
 Copy and run the following code in your R console to **clone the repository**, **install all required packages**, and execute the analysis.
 
 
-# Clone repository, install all packages, and run any analysis (simulated, red, or white wine) in one go
+# Clone repository, install all packages, and run any analysis (simulated and red wine) in one go
 
 ```r
 if (!requireNamespace("git2r", quietly = TRUE)) install.packages("git2r")
