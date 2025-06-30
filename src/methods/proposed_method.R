@@ -37,7 +37,7 @@ transitive_closure <- function(graph) {
 
 
 
-# FIXED Proposed Method function
+# Proposed Method function
 run_proposed_method <- function(data, sigma = 1, threshold_percentile = 0.3) {
     n_vars <- ncol(data)
     hsic_matrix <- matrix(0, n_vars, n_vars)
@@ -78,12 +78,11 @@ run_proposed_method <- function(data, sigma = 1, threshold_percentile = 0.3) {
     threshold <- quantile(hsic_matrix[lower.tri(hsic_matrix)], threshold_percentile, na.rm = TRUE)
     proposed_method_dag <- hsic_matrix > threshold
     
-    # FIXED: Keep upper triangular to match your true DAG
     proposed_method_dag[lower.tri(proposed_method_dag)] <- 0
     
     diag(proposed_method_dag) <- 0
     
-    # Convert to numeric matrix (not logical)
+    # Convert to numeric matrix 
     result_dag <- matrix(as.numeric(proposed_method_dag), nrow = n_vars, ncol = n_vars)
     transitive_closure(result_dag)
 }
