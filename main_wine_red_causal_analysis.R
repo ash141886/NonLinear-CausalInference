@@ -64,7 +64,7 @@ hsic_legacy <- function(x, y, sigma = NULL) {
 hsic_paper <- function(x, y) {
   n <- length(x)
   dx <- as.matrix(dist(as.numeric(x)))
-  dy <- as.matrix(dist(as.numeric(y))))
+  dy <- as.matrix(dist(as.numeric(y)))
   sx <- median(dx[lower.tri(dx)]); if (!is.finite(sx) || sx <= 0) sx <- 1
   sy <- median(dy[lower.tri(dy)]); if (!is.finite(sy) || sy <= 0) sy <- 1
   Kx <- rbf_kernel(x, sx); Ky <- rbf_kernel(y, sy)
