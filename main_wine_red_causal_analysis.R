@@ -1,54 +1,46 @@
 # =============================================================================
-# Wine Quality: Nonlinear Causal Discovery with Additive Models + HSIC
-# -----------------------------------------------------------------------------
-# - Downloads and standardizes the UCI red wine dataset
-# - Implements a leave-one-out (LOO) directional discovery algorithm:
-#     For each ordered pair (i, j), fit V_i ~ s(X \ {V_j}); test HSIC(res_i, V_j).
-#     Large HSIC suggests an edge j -> i.
-# - Supports two HSIC normalizations/bandwidth strategies ("legacy" and "paper")
-# - Includes a simple ICA/LiNGAM baseline
-# - Reports directed metrics (Precision, Recall, F1, Accuracy, SHD, etc.)
-# - Fits full GAMs post hoc to visualize smooth components (partial effects)
-# - Saves a compact smooths panel to figures/wine_smooths.pdf
+# Wine Quality (Red): Leave-One-Out Nonlinear Causal Discovery + Smooth Plots
 # =============================================================================
 
 suppressPackageStartupMessages({
-  library(mgcv)
-  library(ggplot2)
-  library(dplyr)
-  library(fastICA)
-  library(gridExtra)
+  need <- c("mgcv","ggplot2","dplyr","fastICA","gridExtra")
+  has  <- sapply(need, requireNamespace, quietly = TRUE)
+  if (!all(has)) {
+    stop("Missing packages: ", paste(need[!has], collapse = ", "),
+         "\nPlease install them, e.g.: install.packages(c('mgcv','ggplot2','dplyr','fastICA','gridExtra'))")
+  }
+  library(mgcv); library(ggplot2); library(dplyr); library(fastICA); library(gridExtra)
 })
 
-# =============================================================================
-# 1) Data ----------------------------------------------------------------------
-# =============================================================================
+# -----------------------------------------------------------------------------
+# 1) Data (keep header names with spaces exactly as-is)
+# -----------------------------------------------------------------------------
 if (!dir.exists("data")) dir.create("data", recursive = TRUE)
 if (!file.exists("data/winequality-red.csv")) {
   download.file(
     "https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv",
-    "data/winequality-red.csv",
-    quiet = TRUE
+    "data/winequality-red.csv", quiet = TRUE
   )
 }
-wine_raw <- read.csv("data/winequality-red.csv", sep = ";")
-wine <- as.data.frame(scale(wine_raw))  # standardize for smoother fitting
+wine_raw <- read.csv("data/winequality-red.csv", sep = ";", check.names = FALSE)
+stopifnot(is.data.frame(wine_raw), nrow(wine_raw) > 0)
+
+cat("Columns found:\n  ", paste(colnames(wine_raw), collapse = ", "), "\n\n")
+
+# Standardize for modeling
+wine <- as.data.frame(scale(wine_raw))
 
 if (!dir.exists("figures")) dir.create("figures", recursive = TRUE)
+cat(sprintf("Wine Quality (red): %d samples x %d variables\n\n", nrow(wine), ncol(wine)))
 
-cat("Wine Quality (red):", nrow(wine), "samples x", ncol(wine), "variables\n\n")
-
-# =============================================================================
-# 2) HSIC and utilities --------------------------------------------------------
-# =============================================================================
+# -----------------------------------------------------------------------------
+# 2) HSIC utilities
+# -----------------------------------------------------------------------------
 rbf_kernel <- function(x, sigma) {
   d <- as.matrix(dist(as.numeric(x)))
   exp(-(d^2) / (2 * sigma^2))
 }
 
-# HSIC variants:
-# - "legacy": joint-distance median bandwidth, normalize by n^2 (matches many older scripts)
-# - "paper": per-variable median bandwidths, normalize by (n-1)^2
 hsic_legacy <- function(x, y, sigma = NULL) {
   n <- length(x)
   if (is.null(sigma)) {
@@ -62,7 +54,7 @@ hsic_legacy <- function(x, y, sigma = NULL) {
 }
 
 hsic_paper <- function(x, y) {
-  n <- length(x)
+  n  <- length(x)
   dx <- as.matrix(dist(as.numeric(x)))
   dy <- as.matrix(dist(as.numeric(y)))
   sx <- median(dx[lower.tri(dx)]); if (!is.finite(sx) || sx <= 0) sx <- 1
@@ -81,31 +73,35 @@ make_hsic <- function(mode = c("legacy", "paper")) {
   }
 }
 
-# =============================================================================
-# 3) Domain ground truth (directed) -------------------------------------------
-# =============================================================================
-# Sparse, literature-informed relations for evaluation on this dataset.
+# -----------------------------------------------------------------------------
+# 3) Ground truth (names with spaces)
+# -----------------------------------------------------------------------------
 get_wine_ground_truth <- function(colnames_vec) {
   vars <- colnames_vec
   A <- matrix(0, length(vars), length(vars), dimnames = list(vars, vars))
-  A["fixed.acidity",        "pH"]                   <- 1
-  A["volatile.acidity",     "pH"]                   <- 1
-  A["citric.acid",          "pH"]                   <- 1
-  A["citric.acid",          "fixed.acidity"]        <- 1
-  A["residual.sugar",       "density"]              <- 1
+  need <- c("fixed acidity","volatile acidity","citric acid","residual sugar",
+            "chlorides","free sulfur dioxide","total sulfur dioxide","density",
+            "pH","sulphates","alcohol","quality")
+  missing <- setdiff(need, vars)
+  if (length(missing) > 0) {
+    stop("Missing expected variables in data: ", paste(missing, collapse = ", "))
+  }
+  A["fixed acidity",        "pH"]                   <- 1
+  A["volatile acidity",     "pH"]                   <- 1
+  A["citric acid",          "pH"]                   <- 1
+  A["citric acid",          "fixed acidity"]        <- 1
+  A["residual sugar",       "density"]              <- 1
   A["alcohol",              "density"]              <- 1
-  A["free.sulfur.dioxide",  "total.sulfur.dioxide"] <- 1
+  A["free sulfur dioxide",  "total sulfur dioxide"] <- 1
   A["alcohol",              "quality"]              <- 1
-  A["volatile.acidity",     "quality"]              <- 1
+  A["volatile acidity",     "quality"]              <- 1
   A["sulphates",            "quality"]              <- 1
   A
 }
 
-# =============================================================================
-# 4) Leave-one-out discovery (directional) ------------------------------------
-# =============================================================================
-# For each ordered pair (i, j), regress V_i on all predictors except V_j, then test
-# independence between residual(V_i | X\{V_j}) and V_j via HSIC. High HSIC => j -> i.
+# -----------------------------------------------------------------------------
+# 4) LOO discovery (+ optional DAG enforcement)
+# -----------------------------------------------------------------------------
 detect_cycle <- function(adjacency) {
   n <- nrow(adjacency); color <- rep(0, n); parent <- rep(NA_integer_, n)
   cyc <- NULL
@@ -129,8 +125,8 @@ enforce_acyclicity <- function(adjacency, weights) {
     v <- cyc[2]
     inc <- which(adjacency[, v] == 1)
     if (!length(inc)) break
-    wts <- weights[v, inc]              # score[i,j] is HSIC for j -> i
-    rm  <- inc[which.min(wts)]          # remove weakest parent into v
+    wts <- weights[v, inc]
+    rm  <- inc[which.min(wts)]
     adjacency[rm, v] <- 0
     it <- it + 1
   }
@@ -138,21 +134,30 @@ enforce_acyclicity <- function(adjacency, weights) {
 }
 
 discover_loo <- function(data,
-                         hsic_mode = c("legacy", "paper"),
-                         sigma = NULL,                    # fixed bandwidth for legacy; ignored for paper
-                         threshold_percentile = 85,       # percentile over positive scores
+                         hsic_mode = c("legacy","paper"),
+                         sigma = NULL,
+                         threshold_percentile = 85,
                          gam_k_max = 10,
-                         enforce_dag = FALSE) {
+                         enforce_dag = FALSE,
+                         show_progress = TRUE) {
   hsic_fun <- make_hsic(hsic_mode)
   p <- ncol(data); n <- nrow(data); vars <- colnames(data)
   score <- matrix(0, p, p, dimnames = list(vars, vars))
 
+  total_pairs <- p * (p - 1)
+  if (show_progress) {
+    pb <- txtProgressBar(min = 0, max = total_pairs, style = 3)
+    k_done <- 0L
+  }
+
   for (i in 1:p) {
     for (j in 1:p) {
-      if (i == j) next
+      if (i == j) {
+        if (show_progress) { k_done <- k_done + 1L; setTxtProgressBar(pb, k_done) }
+        next
+      }
       preds <- setdiff(1:p, c(i, j))
       if (length(preds) > 0) {
-        # conservative smoother size (scales with n)
         k_basis <- min(5, floor(n / 40))
         rhs <- paste0("s(`", vars[preds], "`, k=", k_basis, ")", collapse = " + ")
         fml <- as.formula(paste0("`", vars[i], "` ~ ", rhs))
@@ -167,8 +172,10 @@ discover_loo <- function(data,
         ri <- data[[i]] - mean(data[[i]])
       }
       score[i, j] <- hsic_fun(ri, data[[j]], sigma = sigma)  # large => j -> i
+      if (show_progress) { k_done <- k_done + 1L; setTxtProgressBar(pb, k_done) }
     }
   }
+  if (show_progress) close(pb)
 
   pos <- score[score > 0]
   thr <- as.numeric(quantile(pos, threshold_percentile / 100, na.rm = TRUE))
@@ -181,24 +188,26 @@ discover_loo <- function(data,
   list(adjacency = adj, scores = score, threshold = thr)
 }
 
-# =============================================================================
-# 5) Baseline (simple ICA/LiNGAM) ---------------------------------------------
-# =============================================================================
+# -----------------------------------------------------------------------------
+# 5) LiNGAM baseline
+# -----------------------------------------------------------------------------
 run_lingam <- function(data) {
   t0 <- Sys.time()
-  n <- ncol(data); dag <- matrix(0, n, n, dimnames = list(colnames(data), colnames(data)))
+  n <- ncol(data)
+  dag <- matrix(0, n, n, dimnames = list(colnames(data), colnames(data)))
   try({
     ica <- fastICA(as.matrix(data), n.comp = n)
-    W <- ica$W; B <- solve(W); diag(B) <- 0
+    W <- ica$W
+    B <- solve(W); diag(B) <- 0
     B[abs(B) < 0.05] <- 0
     dag <- (B != 0) * 1
   }, silent = TRUE)
   list(dag = dag, time = as.numeric(difftime(Sys.time(), t0, units = "secs")))
 }
 
-# =============================================================================
-# 6) Metrics (directed) --------------------------------------------------------
-# =============================================================================
+# -----------------------------------------------------------------------------
+# 6) Directed metrics
+# -----------------------------------------------------------------------------
 metrics_directed <- function(est, tru) {
   stopifnot(all(dim(est) == dim(tru)))
   n <- nrow(tru)
@@ -217,21 +226,26 @@ metrics_directed <- function(est, tru) {
     Graph_Accuracy = accuracy, Misoriented = misoriented, SHD = shd, MSE = mse)
 }
 
-# =============================================================================
-# 7) Hyperparameter tuning -----------------------------------------------------
-# =============================================================================
+# -----------------------------------------------------------------------------
+# 7) Hyperparameter tuning (with progress bar)
+# -----------------------------------------------------------------------------
 tune_wine <- function(data, truth,
-                      hsic_mode = c("legacy", "paper"),
+                      hsic_mode = c("legacy","paper"),
                       thresholds = c(70, 80, 85, 90, 95),
-                      sigmas = c(NA, 0.5, 1.0, 1.5),   # NA => auto for legacy; ignored for paper
-                      k_grid = c(5, 10, 15)) {
+                      sigmas = c(NA, 0.5, 1.0, 1.5),
+                      k_grid = c(5, 10, 15),
+                      show_progress = TRUE) {
   hsic_mode <- match.arg(hsic_mode)
-  cat("Tuning: mode =", hsic_mode, "\n")
   best <- list(F1 = -1, threshold = NA, sigma = NA, k = NA)
-  grid <- expand.grid(threshold = thresholds, sigma = sigmas, k = k_grid)
-  cat("Grid size:", nrow(grid), "\n")
 
-  for (r in 1:nrow(grid)) {
+  grid <- expand.grid(threshold = thresholds, sigma = sigmas, k = k_grid)
+  n_jobs <- nrow(grid)
+  if (show_progress) {
+    pb <- txtProgressBar(min = 0, max = n_jobs, style = 3)
+    j_done <- 0L
+  }
+
+  for (r in 1:n_jobs) {
     g <- grid[r, ]
     res <- discover_loo(
       data,
@@ -239,56 +253,56 @@ tune_wine <- function(data, truth,
       sigma = if (hsic_mode == "legacy" && !is.na(g$sigma)) g$sigma else NULL,
       threshold_percentile = g$threshold,
       gam_k_max = g$k,
-      enforce_dag = FALSE
+      enforce_dag = FALSE,
+      show_progress = FALSE
     )
     m <- metrics_directed(res$adjacency, truth)
-    if (m["F1_Score"] > best$F1) best <- list(F1 = m["F1_Score"], threshold = g$threshold,
-                                              sigma = if (hsic_mode == "legacy") g$sigma else NA,
-                                              k = g$k)
-    cat(sprintf("  %2d/%d  thr=%3.0f  sigma=%s  k=%2d  F1=%.3f\n",
-                r, nrow(grid), g$threshold,
-                ifelse(hsic_mode == "legacy", ifelse(is.na(g$sigma), "auto", as.character(g$sigma)), "n/a"),
-                g$k, m["F1_Score"]))
+    if (m["F1_Score"] > best$F1) {
+      best <- list(F1 = m["F1_Score"], threshold = g$threshold,
+                   sigma = if (hsic_mode == "legacy") g$sigma else NA, k = g$k)
+    }
+    if (show_progress) { j_done <- j_done + 1L; setTxtProgressBar(pb, j_done) }
   }
-  cat(sprintf("\nBest: thr=%3.0f  sigma=%s  k=%d  F1=%.3f\n\n",
+  if (show_progress) close(pb)
+
+  cat(sprintf("\nBest tuning: thr=%d  sigma=%s  k=%d  F1=%.3f\n\n",
               best$threshold,
-              ifelse(hsic_mode == "legacy", ifelse(is.na(best$sigma), "auto", as.character(best$sigma)), "n/a"),
+              ifelse(hsic_mode == "legacy",
+                     ifelse(is.na(best$sigma), "auto", as.character(best$sigma)), "n/a"),
               best$k, best$F1))
   best
 }
 
-# =============================================================================
-# 8) Visualization of smooth components ---------------------------------------
-# =============================================================================
-# Fit full GAMs (with all predictors) for selected responses to visualize partial effects.
+# -----------------------------------------------------------------------------
+# 8) Smooth components (post-hoc interpretability)
+# -----------------------------------------------------------------------------
 fit_gams_for_visualization <- function(data, responses = c("quality", "density", "pH"), k_max = 10) {
-  gms <- list()
+  models <- list()
   for (resp in intersect(responses, colnames(data))) {
     preds <- setdiff(colnames(data), resp)
     terms <- paste0("s(`", preds, "`, k=", min(k_max, 10), ")", collapse = " + ")
     fml <- as.formula(paste0("`", resp, "` ~ ", terms))
     gm <- tryCatch(gam(fml, data = data, method = "REML"), error = function(e) NULL)
-    if (!is.null(gm)) gms[[resp]] <- gm
+    if (!is.null(gm)) models[[resp]] <- gm
   }
-  gms
+  models
 }
 
 plot_smooth_panel <- function(models, data) {
   rels <- list(
-    list(model = "quality", predictor = "volatile.acidity",
+    list(model = "quality", predictor = "volatile acidity",
          xlab = "Volatile acidity (std.)", ylab = "Quality (partial)"),
     list(model = "density", predictor = "alcohol",
          xlab = "Alcohol (std.)", ylab = "Density (partial)"),
-    list(model = "pH", predictor = "citric.acid",
+    list(model = "pH", predictor = "citric acid",
          xlab = "Citric acid (std.)", ylab = "pH (partial)")
   )
   plots <- list()
   for (rel in rels) if (rel$model %in% names(models)) {
     m <- models[[rel$model]]
     x <- seq(-3, 3, length.out = 200)
-    # newdata at mean-zero for standardized covariates
-    newd <- as.data.frame(matrix(0, nrow = length(x), ncol = ncol(wine)))
-    colnames(newd) <- colnames(wine)
+    newd <- as.data.frame(matrix(0, nrow = length(x), ncol = ncol(data)))
+    colnames(newd) <- colnames(data)
     if (!rel$predictor %in% colnames(newd)) next
     newd[[rel$predictor]] <- x
 
@@ -310,9 +324,9 @@ plot_smooth_panel <- function(models, data) {
   }
   if (length(plots) >= 3) {
     combined <- grid.arrange(
-      plots[["quality_volatile.acidity"]],
+      plots[["quality_volatile acidity"]],
       plots[["density_alcohol"]],
-      plots[["pH_citric.acid"]],
+      plots[["pH_citric acid"]],
       ncol = 3
     )
     ggsave("figures/wine_smooths.pdf", combined, width = 9.5, height = 3.3, dpi = 300)
@@ -320,23 +334,24 @@ plot_smooth_panel <- function(models, data) {
   }
 }
 
-# =============================================================================
-# 9) Main ----------------------------------------------------------------------
-# =============================================================================
+# -----------------------------------------------------------------------------
+# 9) Main
+# -----------------------------------------------------------------------------
 set.seed(1)
 
 truth <- get_wine_ground_truth(colnames(wine))
 
-# Choose HSIC mode:
-HSIC_MODE <- "legacy"   # "legacy" (default) or "paper"
+HSIC_MODE <- "legacy"   # choose "legacy" or "paper"
 
+cat("Tuning parameters...\n")
 best <- tune_wine(
   data = wine,
   truth = truth,
   hsic_mode = HSIC_MODE,
   thresholds = c(70, 80, 85, 90, 95),
   sigmas = c(NA, 0.5, 1.0, 1.5),  # used only in legacy mode
-  k_grid = c(5, 10, 15)
+  k_grid = c(5, 10, 15),
+  show_progress = TRUE
 )
 
 cat("Running LOO discovery with tuned parameters...\n")
@@ -347,7 +362,8 @@ disc <- discover_loo(
   sigma = if (HSIC_MODE == "legacy" && !is.na(best$sigma)) best$sigma else NULL,
   threshold_percentile = best$threshold,
   gam_k_max = best$k,
-  enforce_dag = FALSE
+  enforce_dag = FALSE,
+  show_progress = TRUE
 )
 time_prop <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 
@@ -372,7 +388,7 @@ results <- data.frame(
 cat("\n=== Directed Metrics ===\n")
 print(format(results, digits = 3), row.names = FALSE)
 
-# Smooth component visualization (post hoc; interpretability)
+cat("\nFitting post-hoc GAMs for smooth plots...\n")
 mods <- fit_gams_for_visualization(wine, k_max = best$k)
 plot_smooth_panel(mods, wine)
 
