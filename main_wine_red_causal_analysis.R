@@ -1,21 +1,28 @@
 # =============================================================================
-# Wine Quality (Red): Leave-One-Out Nonlinear Causal Discovery + Smooth Plots
+# Wine Quality (Red): Full LOO Nonlinear Causal Discovery + Metrics + Smooths
 # =============================================================================
 
 suppressPackageStartupMessages({
   need <- c("mgcv","ggplot2","dplyr","fastICA","gridExtra")
-  has  <- sapply(need, requireNamespace, quietly = TRUE)
-  if (!all(has)) {
-    stop("Missing packages: ", paste(need[!has], collapse = ", "),
-         "\nPlease install them, e.g.: install.packages(c('mgcv','ggplot2','dplyr','fastICA','gridExtra'))")
+  miss <- need[!sapply(need, requireNamespace, quietly = TRUE)]
+  if (length(miss)) {
+    install.packages(miss, repos = "https://cloud.r-project.org")
   }
   library(mgcv); library(ggplot2); library(dplyr); library(fastICA); library(gridExtra)
 })
 
+set.seed(1)
+
+# -----------------------------------------------------------------------------
+# 0) IO setup
+# -----------------------------------------------------------------------------
+if (!dir.exists("data"))    dir.create("data", recursive = TRUE)
+if (!dir.exists("figures")) dir.create("figures", recursive = TRUE)
+if (!dir.exists("results")) dir.create("results", recursive = TRUE)
+
 # -----------------------------------------------------------------------------
 # 1) Data (keep header names with spaces exactly as-is)
 # -----------------------------------------------------------------------------
-if (!dir.exists("data")) dir.create("data", recursive = TRUE)
 if (!file.exists("data/winequality-red.csv")) {
   download.file(
     "https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv",
@@ -25,12 +32,8 @@ if (!file.exists("data/winequality-red.csv")) {
 wine_raw <- read.csv("data/winequality-red.csv", sep = ";", check.names = FALSE)
 stopifnot(is.data.frame(wine_raw), nrow(wine_raw) > 0)
 
-cat("Columns found:\n  ", paste(colnames(wine_raw), collapse = ", "), "\n\n")
-
-# Standardize for modeling
+cat("Columns found:\n  ", paste(colnames(wine_raw), collapse = ", "), "\n")
 wine <- as.data.frame(scale(wine_raw))
-
-if (!dir.exists("figures")) dir.create("figures", recursive = TRUE)
 cat(sprintf("Wine Quality (red): %d samples x %d variables\n\n", nrow(wine), ncol(wine)))
 
 # -----------------------------------------------------------------------------
@@ -64,7 +67,7 @@ hsic_paper <- function(x, y) {
   sum((H %*% Kx %*% H) * Ky) / (n - 1)^2
 }
 
-make_hsic <- function(mode = c("legacy", "paper")) {
+make_hsic <- function(mode = c("legacy","paper")) {
   mode <- match.arg(mode)
   if (mode == "legacy") {
     function(x, y, sigma = NULL) hsic_legacy(x, y, sigma)
@@ -74,7 +77,7 @@ make_hsic <- function(mode = c("legacy", "paper")) {
 }
 
 # -----------------------------------------------------------------------------
-# 3) Ground truth (names with spaces)
+# 3) Chemistry-based reference graph
 # -----------------------------------------------------------------------------
 get_wine_ground_truth <- function(colnames_vec) {
   vars <- colnames_vec
@@ -83,9 +86,8 @@ get_wine_ground_truth <- function(colnames_vec) {
             "chlorides","free sulfur dioxide","total sulfur dioxide","density",
             "pH","sulphates","alcohol","quality")
   missing <- setdiff(need, vars)
-  if (length(missing) > 0) {
-    stop("Missing expected variables in data: ", paste(missing, collapse = ", "))
-  }
+  if (length(missing) > 0) stop("Missing expected variables: ", paste(missing, collapse = ", "))
+
   A["fixed acidity",        "pH"]                   <- 1
   A["volatile acidity",     "pH"]                   <- 1
   A["citric acid",          "pH"]                   <- 1
@@ -99,17 +101,19 @@ get_wine_ground_truth <- function(colnames_vec) {
   A
 }
 
+truth <- get_wine_ground_truth(colnames(wine))
+
 # -----------------------------------------------------------------------------
 # 4) LOO discovery (+ optional DAG enforcement)
 # -----------------------------------------------------------------------------
 detect_cycle <- function(adjacency) {
-  n <- nrow(adjacency); color <- rep(0, n); parent <- rep(NA_integer_, n)
+  n <- nrow(adjacency); color <- rep(0, n)
   cyc <- NULL
   dfs <- function(v) {
     color[v] <<- 1
     for (u in which(adjacency[v, ] == 1)) {
       if (color[u] == 1) { cyc <<- c(u, v); return(TRUE) }
-      if (color[u] == 0) { parent[u] <<- v; if (dfs(u)) return(TRUE) }
+      if (color[u] == 0) { if (dfs(u)) return(TRUE) }
     }
     color[v] <<- 2; FALSE
   }
@@ -145,35 +149,27 @@ discover_loo <- function(data,
   score <- matrix(0, p, p, dimnames = list(vars, vars))
 
   total_pairs <- p * (p - 1)
-  if (show_progress) {
-    pb <- txtProgressBar(min = 0, max = total_pairs, style = 3)
-    k_done <- 0L
-  }
+  if (show_progress) { pb <- txtProgressBar(min = 0, max = total_pairs, style = 3); k_done <- 0L }
 
-  for (i in 1:p) {
-    for (j in 1:p) {
-      if (i == j) {
-        if (show_progress) { k_done <- k_done + 1L; setTxtProgressBar(pb, k_done) }
-        next
-      }
-      preds <- setdiff(1:p, c(i, j))
-      if (length(preds) > 0) {
-        k_basis <- min(5, floor(n / 40))
-        rhs <- paste0("s(`", vars[preds], "`, k=", k_basis, ")", collapse = " + ")
-        fml <- as.formula(paste0("`", vars[i], "` ~ ", rhs))
-        mdl <- tryCatch(
-          suppressWarnings(gam(fml, data = data, method = "REML", gamma = 1.4)),
-          error = function(e) lm(as.formula(paste0("`", vars[i], "` ~ ",
-                                                   paste0("`", vars[preds], "`", collapse = " + "))),
-                                 data = data)
-        )
-        ri <- residuals(mdl)
-      } else {
-        ri <- data[[i]] - mean(data[[i]])
-      }
-      score[i, j] <- hsic_fun(ri, data[[j]], sigma = sigma)  # large => j -> i
-      if (show_progress) { k_done <- k_done + 1L; setTxtProgressBar(pb, k_done) }
+  for (i in 1:p) for (j in 1:p) {
+    if (i == j) { if (show_progress) { k_done <- k_done + 1L; setTxtProgressBar(pb, k_done) }; next }
+    preds <- setdiff(1:p, c(i, j))
+    if (length(preds) > 0) {
+      k_basis <- min(5, floor(n / 40))
+      rhs <- paste0("s(`", vars[preds], "`, k=", k_basis, ")", collapse = " + ")
+      fml <- as.formula(paste0("`", vars[i], "` ~ ", rhs))
+      mdl <- tryCatch(
+        suppressWarnings(gam(fml, data = data, method = "REML", gamma = 1.4)),
+        error = function(e) lm(as.formula(paste0("`", vars[i], "` ~ ",
+                                                 paste0("`", vars[preds], "`", collapse = " + "))),
+                               data = data)
+      )
+      ri <- residuals(mdl)
+    } else {
+      ri <- data[[i]] - mean(data[[i]])
     }
+    score[i, j] <- hsic_fun(ri, data[[j]], sigma = sigma)  # large => j -> i
+    if (show_progress) { k_done <- k_done + 1L; setTxtProgressBar(pb, k_done) }
   }
   if (show_progress) close(pb)
 
@@ -182,14 +178,13 @@ discover_loo <- function(data,
 
   adj <- matrix(0, p, p, dimnames = list(vars, vars))
   for (i in 1:p) for (j in 1:p) if (i != j && score[i, j] > thr) adj[j, i] <- 1
-
   if (enforce_dag) adj <- enforce_acyclicity(adj, score)
 
   list(adjacency = adj, scores = score, threshold = thr)
 }
 
 # -----------------------------------------------------------------------------
-# 5) LiNGAM baseline
+# 5) LiNGAM baseline (fastICA heuristic)
 # -----------------------------------------------------------------------------
 run_lingam <- function(data) {
   t0 <- Sys.time()
@@ -227,7 +222,7 @@ metrics_directed <- function(est, tru) {
 }
 
 # -----------------------------------------------------------------------------
-# 7) Hyperparameter tuning (with progress bar)
+# 7) Hyperparameter tuning
 # -----------------------------------------------------------------------------
 tune_wine <- function(data, truth,
                       hsic_mode = c("legacy","paper"),
@@ -240,10 +235,7 @@ tune_wine <- function(data, truth,
 
   grid <- expand.grid(threshold = thresholds, sigma = sigmas, k = k_grid)
   n_jobs <- nrow(grid)
-  if (show_progress) {
-    pb <- txtProgressBar(min = 0, max = n_jobs, style = 3)
-    j_done <- 0L
-  }
+  if (show_progress) { pb <- txtProgressBar(min = 0, max = n_jobs, style = 3); j_done <- 0L }
 
   for (r in 1:n_jobs) {
     g <- grid[r, ]
@@ -274,82 +266,80 @@ tune_wine <- function(data, truth,
 }
 
 # -----------------------------------------------------------------------------
-# 8) Smooth components (post-hoc interpretability)
+# 8) Smooth components (robust to spaces in names; univariate plots)
 # -----------------------------------------------------------------------------
-fit_gams_for_visualization <- function(data, responses = c("quality", "density", "pH"), k_max = 10) {
-  models <- list()
-  for (resp in intersect(responses, colnames(data))) {
-    preds <- setdiff(colnames(data), resp)
-    terms <- paste0("s(`", preds, "`, k=", min(k_max, 10), ")", collapse = " + ")
-    fml <- as.formula(paste0("`", resp, "` ~ ", terms))
-    gm <- tryCatch(gam(fml, data = data, method = "REML"), error = function(e) NULL)
-    if (!is.null(gm)) models[[resp]] <- gm
-  }
-  models
+# We fit *univariate* GAMs with syntactic (safe) names, then plot the partials.
+
+make_syn <- function(df) { setNames(df, make.names(colnames(df), unique = TRUE)) }
+
+fit_uni_gam <- function(df_syn, resp_syn, pred_syn, k = 8) {
+  df2 <- df_syn[, c(resp_syn, pred_syn)]
+  df2 <- df2[is.finite(df2[[1]]) & is.finite(df2[[2]]), , drop = FALSE]
+  gam(reformulate(sprintf("s(%s, k=%d)", pred_syn, k), response = resp_syn),
+      data = df2, method = "REML", select = TRUE)
 }
 
-plot_smooth_panel <- function(models, data) {
-  rels <- list(
-    list(model = "quality", predictor = "volatile acidity",
-         xlab = "Volatile acidity (std.)", ylab = "Quality (partial)"),
-    list(model = "density", predictor = "alcohol",
-         xlab = "Alcohol (std.)", ylab = "Density (partial)"),
-    list(model = "pH", predictor = "citric acid",
-         xlab = "Citric acid (std.)", ylab = "pH (partial)")
-  )
-  plots <- list()
-  for (rel in rels) if (rel$model %in% names(models)) {
-    m <- models[[rel$model]]
-    x <- seq(-3, 3, length.out = 200)
-    newd <- as.data.frame(matrix(0, nrow = length(x), ncol = ncol(data)))
-    colnames(newd) <- colnames(data)
-    if (!rel$predictor %in% colnames(newd)) next
-    newd[[rel$predictor]] <- x
+plot_uni <- function(df_syn, resp_syn, pred_syn, xlab, ylab) {
+  k <- max(6, min(12, floor(nrow(df_syn)/150)))
+  m <- fit_uni_gam(df_syn, resp_syn, pred_syn, k = k)
+  rng <- range(df_syn[[pred_syn]], na.rm = TRUE)
+  newd <- setNames(data.frame(seq(rng[1], rng[2], length.out = 200)), pred_syn)
+  pr   <- predict(m, newdata = newd, type = "link", se.fit = TRUE)
+  edf  <- sum(m$edf, na.rm = TRUE)
+  dd   <- data.frame(x = newd[[1]], y = pr$fit, se = pr$se.fit)
+  ggplot(dd, aes(x, y)) +
+    geom_ribbon(aes(ymin = y - 1.96*se, ymax = y + 1.96*se), alpha = 0.15) +
+    geom_line() +
+    geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.6) +
+    labs(x = xlab, y = ylab, subtitle = sprintf("EDF = %.1f", edf)) +
+    theme_minimal(base_size = 11) +
+    theme(plot.subtitle = element_text(size = 9))
+}
 
-    pr <- predict(m, newdata = newd, type = "terms", se.fit = TRUE)
-    idx <- grep(paste0("(^|`)", rel$predictor, "(`|$)"), colnames(pr$fit))[1]
-    if (is.na(idx)) next
+save_smooths <- function(orig_df) {
+  # map original to syntactic
+  syn_df  <- make_syn(orig_df)
+  map_syn <- setNames(colnames(syn_df), colnames(orig_df))
 
-    edf <- sum(m$edf[grep(rel$predictor, names(m$edf))])
-    df  <- data.frame(x = x, y = pr$fit[, idx], se = pr$se.fit[, idx])
-
-    p <- ggplot(df, aes(x, y)) +
-      geom_ribbon(aes(ymin = y - 1.96*se, ymax = y + 1.96*se), fill = "gray90") +
-      geom_line() +
-      geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.6) +
-      labs(x = rel$xlab, y = rel$ylab, subtitle = sprintf("EDF = %.1f", edf)) +
-      theme_minimal() +
-      theme(plot.subtitle = element_text(size = 9))
-    plots[[paste0(rel$model, "_", rel$predictor)]] <- p
+  get_name <- function(patts) {
+    nms <- names(map_syn)
+    for (p in patts) {
+      h <- grep(p, nms, ignore.case = TRUE, perl = TRUE)
+      if (length(h)) return(map_syn[[ nms[h[1]] ]])
+    }
+    NA_character_
   }
-  if (length(plots) >= 3) {
-    combined <- grid.arrange(
-      plots[["quality_volatile acidity"]],
-      plots[["density_alcohol"]],
-      plots[["pH_citric acid"]],
-      ncol = 3
-    )
-    ggsave("figures/wine_smooths.pdf", combined, width = 9.5, height = 3.3, dpi = 300)
-    message("Saved: figures/wine_smooths.pdf")
-  }
+
+  rq <- get_name(c("^quality$","\\bqual"))
+  rd <- get_name(c("^density$","\\bdens"))
+  rp <- get_name(c("^pH$","^ph$","p\\.?h\\b"))
+  pv <- get_name(c("volatile\\.?\\s*acidity","\\bvolatile\\b"))
+  pa <- get_name(c("^alcohol$"))
+  pc <- get_name(c("citric\\.?\\s*acid","^citric$"))
+
+  need <- c(rq, rd, rp, pv, pa, pc)
+  if (any(!nzchar(need))) stop("Could not resolve needed columns for smooths.")
+
+  p1 <- plot_uni(syn_df, rq, pv, "Volatile acidity (std.)", "Quality (partial)")
+  p2 <- plot_uni(syn_df, rd, pa, "Alcohol (std.)",          "Density (partial)")
+  p3 <- plot_uni(syn_df, rp, pc, "Citric acid (std.)",      "pH (partial)")
+
+  combo <- grid.arrange(p1, p2, p3, ncol = 3)
+  ggsave("figures/wine_smooths.pdf", combo, width = 9.5, height = 3.3, dpi = 300)
+  ggsave("figures/wine_smooths.png", combo, width = 9.5, height = 3.3, dpi = 300)
+  message("Saved: figures/wine_smooths.pdf and figures/wine_smooths.png")
 }
 
 # -----------------------------------------------------------------------------
-# 9) Main
+# 9) Run: tune → discover → baseline → metrics → save → smooth plots
 # -----------------------------------------------------------------------------
-set.seed(1)
-
-truth <- get_wine_ground_truth(colnames(wine))
-
-HSIC_MODE <- "legacy"   # choose "legacy" or "paper"
+HSIC_MODE <- "legacy"
 
 cat("Tuning parameters...\n")
 best <- tune_wine(
-  data = wine,
-  truth = truth,
-  hsic_mode = HSIC_MODE,
+  data = wine, truth = truth, hsic_mode = HSIC_MODE,
   thresholds = c(70, 80, 85, 90, 95),
-  sigmas = c(NA, 0.5, 1.0, 1.5),  # used only in legacy mode
+  sigmas = c(NA, 0.5, 1.0, 1.5),
   k_grid = c(5, 10, 15),
   show_progress = TRUE
 )
@@ -388,8 +378,15 @@ results <- data.frame(
 cat("\n=== Directed Metrics ===\n")
 print(format(results, digits = 3), row.names = FALSE)
 
-cat("\nFitting post-hoc GAMs for smooth plots...\n")
-mods <- fit_gams_for_visualization(wine, k_max = best$k)
-plot_smooth_panel(mods, wine)
+# Save results
+write.csv(results, "results/wine_metrics.csv", row.names = FALSE)
+write.csv(disc$adjacency, "results/adjacency_proposed.csv")
+write.csv(ling$dag,       "results/adjacency_lingam.csv")
+saveRDS(list(scores = disc$scores, threshold = disc$threshold),
+        "results/proposed_scores_threshold.rds")
 
-cat("\nDone.\n")
+# Smooth plots (the panel you want)
+cat("\nFitting post-hoc univariate GAMs for smooth plots...\n")
+save_smooths(wine)
+
+cat("\nAll done.\nOutputs written to:\n  results/wine_metrics.csv\n  results/adjacency_proposed.csv\n  results/adjacency_lingam.csv\n  results/proposed_scores_threshold.rds\n  figures/wine_smooths.pdf (and .png)\n")
