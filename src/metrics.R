@@ -1,87 +1,68 @@
 # =============================================================================
-# Causal Discovery Project: Metrics and Analysis Functions
+# SECTION 5: PERFORMANCE EVALUATION
 # =============================================================================
 
-# ----------------------------------------------------------------------------- 
-# Metrics Calculation Function
-# -----------------------------------------------------------------------------
-calculate_dag_metrics_improved <- function(estimated_dag, true_dag) {
-    n <- nrow(true_dag)
-    TP_dir <- 0; FP_dir <- 0; FN_dir <- 0; misoriented <- 0; TN_dir <- 0
-    for (i in 1:n) {
-        for (j in 1:n) {
-            if (i == j) next
-            if (true_dag[i, j] == 1) {
-                if (estimated_dag[i, j] == 1) {
-                    TP_dir <- TP_dir + 1
-                } else if (estimated_dag[j, i] == 1) {
-                    misoriented <- misoriented + 1
-                    FN_dir <- FN_dir + 1
-                } else {
-                    FN_dir <- FN_dir + 1
-                }
-            } else {
-                if (estimated_dag[i, j] == 1) {
-                    FP_dir <- FP_dir + 1
-                } else {
-                    TN_dir <- TN_dir + 1
-                }
-            }
-        }
-    }
-    Precision_dir <- ifelse((TP_dir + FP_dir) > 0, TP_dir / (TP_dir + FP_dir), 0)
-    Recall_dir <- ifelse((TP_dir + FN_dir) > 0, TP_dir / (TP_dir + FN_dir), 0)
-    F1_Score_dir <- ifelse((Precision_dir + Recall_dir) > 0,
-                           2 * Precision_dir * Recall_dir / (Precision_dir + Recall_dir), 0)
-    Graph_Accuracy <- (TP_dir + TN_dir) / (n * (n - 1))
-    SHD <- sum(abs(estimated_dag - true_dag))
-    MSE <- mean((true_dag - estimated_dag)[row(true_dag) != col(true_dag)]^2)
-    MAE <- mean(abs(true_dag - estimated_dag)[row(true_dag) != col(true_dag)])
-    c(Precision_dir = Precision_dir, Recall_dir = Recall_dir, F1_Score_dir = F1_Score_dir,
-      Graph_Accuracy = Graph_Accuracy, Misoriented = misoriented, SHD = SHD,
-      MSE = MSE, MAE = MAE)
+evaluate_performance <- function(estimated, truth) {
+  n <- nrow(truth)
+  true_positives <- sum(estimated == 1 & truth == 1)
+  false_positives <- sum(estimated == 1 & truth == 0)
+  false_negatives <- sum(estimated == 0 & truth == 1)
+  true_negatives <- sum(estimated == 0 & truth == 0) - n
+  misoriented <- 0
+  for (i in 1:n) for (j in 1:n) if (i < j) {
+    if (truth[i, j] == 1 && estimated[j, i] == 1 && estimated[i, j] == 0) misoriented <- misoriented + 1
+    else if (truth[j, i] == 1 && estimated[i, j] == 1 && estimated[j, i] == 0) misoriented <- misoriented + 1
+  }
+  precision <- ifelse((true_positives + false_positives) > 0, true_positives / (true_positives + false_positives), 0)
+  recall    <- ifelse((true_positives + false_negatives) > 0, true_positives / (true_positives + false_negatives), 0)
+  f1_score  <- ifelse((precision + recall) > 0, 2 * precision * recall / (precision + recall), 0)
+  accuracy  <- (true_positives + true_negatives) / (n * (n - 1))
+  structural_hamming <- sum(abs(estimated - truth))
+  mse <- mean((estimated - truth)^2)
+  c(Precision_dir = precision, Recall_dir = recall, F1_Score_dir = f1_score,
+    Graph_Accuracy = accuracy, Misoriented = misoriented, SHD = structural_hamming, MSE = mse)
 }
 
-# ----------------------------------------------------------------------------- 
-# Main Experiment Analysis Function
-# -----------------------------------------------------------------------------
-analyze_causal_structure <- function(n_vars, n_samples, nonlinearity = 0.3,
-                                     sparsity = 0.3, noise_level = 0.1,
-                                     gam_sigma = 1, threshold_percentile = 0.3) {
-    cat("Running analysis for", n_vars, "variables and", n_samples, "samples...\n")
-    data <- generate_data(n_vars, n_samples, nonlinearity, sparsity, noise_level)
-    true_dag <- matrix(0, n_vars, n_vars)
-    true_dag[upper.tri(true_dag)] <- 1
-    methods <- c("Proposed Method", "LiNGAM")
-    results <- data.frame(Method = methods, Time = NA, stringsAsFactors = FALSE)
-    for (method in methods) {
-        cat("Running", method, "method...\n")
-        start_time <- Sys.time()
-        if (method == "Proposed Method") {
-            dag <- tryCatch({
-                run_proposed_method(data, sigma = gam_sigma, threshold_percentile = threshold_percentile)
-            }, error = function(e) {
-                cat("Error in Proposed Method:", e$message, "\n")
-                matrix(0, n_vars, n_vars)
-            })
-            end_time <- Sys.time()
-            time_taken <- as.numeric(difftime(end_time, start_time, units = "secs"))
-        } else if (method == "LiNGAM") {
-            lingam_result <- run_lingam_algorithm(data)
-            dag <- lingam_result$dag
-            time_taken <- lingam_result$time
-        }
-        results$Time[results$Method == method] <- time_taken
-        metrics <- calculate_dag_metrics_improved(dag, true_dag)
-        metrics[is.na(metrics)] <- 0
-        results[results$Method == method, names(metrics)] <- metrics
+# =============================================================================
+# SECTION 6: SIMULATION FRAMEWORK
+# =============================================================================
+
+conduct_simulation_study <- function(variable_sizes, sample_sizes, replications = 50,
+                                     nonlinearity = 0.5, sparsity = 0.3, noise_level = 0.5) {
+  complete_results <- data.frame()
+  for (n_vars in variable_sizes) {
+    for (n_samples in sample_sizes) {
+      for (rep in 1:replications) {
+        data_generation <- generate_nonlinear_sem_data(
+          n_vars, n_samples, nonlinearity, sparsity, noise_level,
+          seed = rep * 1000 + n_vars * 10 + n_samples
+        )
+        data <- data_generation$data
+        true_graph <- data_generation$true_dag
+        if (sum(true_graph) == 0) next
+        time_start <- Sys.time()
+        estimated_proposed <- tryCatch(
+          discover_causal_structure(data, sigma = NULL, threshold_percentile = 85),
+          error = function(e) matrix(0, n_vars, n_vars)
+        )
+        time_proposed <- as.numeric(difftime(Sys.time(), time_start, units = "secs"))
+        metrics_proposed <- evaluate_performance(estimated_proposed, true_graph)
+        lingam_output <- lingam_discovery(data)
+        metrics_lingam <- evaluate_performance(lingam_output$dag, true_graph)
+        iteration_results <- rbind(
+          data.frame(Method = "Proposed Method", Variables = n_vars, Samples = n_samples,
+                     Replication = rep, Time = time_proposed, t(metrics_proposed)),
+          data.frame(Method = "LiNGAM", Variables = n_vars, Samples = n_samples,
+                     Replication = rep, Time = lingam_output$time, t(metrics_lingam))
+        )
+        complete_results <- rbind(complete_results, iteration_results)
+      }
     }
-    results$Variables <- n_vars
-    results$Samples <- n_samples
-    results$Nonlinearity <- nonlinearity
-    results$Sparsity <- sparsity
-    results$Noise <- noise_level
-    results$Threshold <- threshold_percentile
-    results$gam_sigma <- gam_sigma
-    results
+  }
+  aggregated_results <- complete_results %>%
+    group_by(Method, Variables, Samples) %>%
+    summarise(across(c(Precision_dir, Recall_dir, F1_Score_dir,
+                       Graph_Accuracy, Misoriented, SHD, MSE, Time),
+                     mean, na.rm = TRUE), .groups = 'drop')
+  list(detailed = complete_results, summary = aggregated_results)
 }
