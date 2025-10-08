@@ -24,10 +24,12 @@ if (!dir.exists("results")) dir.create("results", recursive = TRUE)
 # 1) Data (keep header names with spaces exactly as-is)
 # -----------------------------------------------------------------------------
 if (!file.exists("data/winequality-red.csv")) {
+  cat("Downloading winequality-red.csv ...\n")
   download.file(
     "https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv",
     "data/winequality-red.csv", quiet = TRUE
   )
+  cat("Download complete.\n")
 }
 wine_raw <- read.csv("data/winequality-red.csv", sep = ";", check.names = FALSE)
 stopifnot(is.data.frame(wine_raw), nrow(wine_raw) > 0)
@@ -44,7 +46,7 @@ rbf_kernel <- function(x, sigma) {
   exp(-(d^2) / (2 * sigma^2))
 }
 
-# legacy HSIC (not used by default)
+# optional legacy HSIC
 hsic_legacy <- function(x, y, sigma = NULL) {
   n <- length(x)
   if (is.null(sigma)) {
@@ -95,7 +97,7 @@ get_wine_ground_truth <- function(colnames_vec) {
   A["citric acid",          "pH"]                   <- 1
   A["citric acid",          "fixed acidity"]        <- 1
   A["residual sugar",       "density"]              <- 1
-  A["alcohol",              "density"]              <- 1
+  A["alcohol",              "density"]              <- 1  # inverse relation in raw scale
   A["free sulfur dioxide",  "total sulfur dioxide"] <- 1
   A["alcohol",              "quality"]              <- 1
   A["volatile acidity",     "quality"]              <- 1
@@ -122,11 +124,14 @@ detect_cycle <- function(adjacency) {
   cyc
 }
 
-enforce_acyclicity <- function(adjacency, weights) {
+enforce_acyclicity <- function(adjacency, weights, show_progress = TRUE) {
   n <- nrow(adjacency); maxit <- n * n; it <- 0
-  while (it < maxit) {
+  if (show_progress) {
+    pb <- txtProgressBar(min = 0, max = maxit, style = 3)
+  }
+  repeat {
     cyc <- detect_cycle(adjacency)
-    if (is.null(cyc)) break
+    if (is.null(cyc) || it >= maxit) break
     v <- cyc[2]
     inc <- which(adjacency[, v] == 1)
     if (!length(inc)) break
@@ -134,7 +139,9 @@ enforce_acyclicity <- function(adjacency, weights) {
     rm  <- inc[which.min(wts)]
     adjacency[rm, v] <- 0
     it <- it + 1
+    if (show_progress) setTxtProgressBar(pb, it)
   }
+  if (show_progress) close(pb)
   adjacency
 }
 
@@ -149,7 +156,10 @@ discover_loo <- function(data,
   score <- matrix(0, p, p, dimnames = list(vars, vars))
 
   total_pairs <- p * (p - 1)
-  if (show_progress) { pb <- txtProgressBar(min = 0, max = total_pairs, style = 3); k_done <- 0L }
+  if (show_progress) {
+    cat(sprintf("Scoring %d ordered pairs with HSIC...\n", total_pairs))
+    pb <- txtProgressBar(min = 0, max = total_pairs, style = 3); k_done <- 0L
+  }
 
   for (i in 1:p) for (j in 1:p) {
     if (i == j) { if (show_progress) { k_done <- k_done + 1L; setTxtProgressBar(pb, k_done) }; next }
@@ -177,12 +187,18 @@ discover_loo <- function(data,
   # Fixed high-percentile threshold on pooled HSIC scores (no reference used)
   pos <- score[score > 0]
   thr <- as.numeric(quantile(pos, threshold_percentile / 100, na.rm = TRUE))
+  cat(sprintf("Threshold (%.1f%% percentile) = %.6f\n", threshold_percentile, thr))
 
   adj <- matrix(0, p, p, dimnames = list(vars, vars))
   for (i in 1:p) for (j in 1:p) if (i != j && score[i, j] > thr) adj[j, i] <- 1
+  cat(sprintf("Edges selected before DAG enforcement: %d\n", sum(adj)))
 
   # Enforce DAG by removing the minimum-score edge on each detected cycle
-  if (enforce_dag) adj <- enforce_acyclicity(adj, score)
+  if (enforce_dag) {
+    cat("Enforcing acyclicity (removing minimum-score edges on cycles)...\n")
+    adj <- enforce_acyclicity(adj, score, show_progress = TRUE)
+    cat(sprintf("Edges after DAG enforcement: %d\n", sum(adj)))
+  }
 
   list(adjacency = adj, scores = score, threshold = thr)
 }
@@ -194,6 +210,7 @@ run_lingam <- function(data) {
   t0 <- Sys.time()
   n <- ncol(data)
   dag <- matrix(0, n, n, dimnames = list(colnames(data), colnames(data)))
+  cat("Running LiNGAM baseline...\n")
   try({
     ica <- fastICA(as.matrix(data), n.comp = n)
     W <- ica$W
@@ -255,7 +272,11 @@ plot_uni <- function(df_syn, resp_syn, pred_syn, xlab, ylab) {
     theme(plot.subtitle = element_text(size = 9))
 }
 
-save_smooths <- function(orig_df) {
+save_smooths <- function(orig_df, show_progress = TRUE) {
+  if (show_progress) {
+    cat("Creating smooth plots (3 panels)...\n")
+    pb <- txtProgressBar(min = 0, max = 3, style = 3); k <- 0L
+  }
   # map original to syntactic
   syn_df  <- make_syn(orig_df)
   map_syn <- setNames(colnames(syn_df), colnames(orig_df))
@@ -280,8 +301,11 @@ save_smooths <- function(orig_df) {
   if (any(!nzchar(need))) stop("Could not resolve needed columns for smooths.")
 
   p1 <- plot_uni(syn_df, rq, pv, "Volatile acidity (std.)", "Quality (partial)")
+  if (show_progress) { k <- k + 1L; setTxtProgressBar(pb, k) }
   p2 <- plot_uni(syn_df, rd, pa, "Alcohol (std.)",          "Density (partial)")
+  if (show_progress) { k <- k + 1L; setTxtProgressBar(pb, k) }
   p3 <- plot_uni(syn_df, rp, pc, "Citric acid (std.)",      "pH (partial)")
+  if (show_progress) { k <- k + 1L; setTxtProgressBar(pb, k); close(pb) }
 
   combo <- grid.arrange(p1, p2, p3, ncol = 3)
   ggsave("figures/wine_smooths.pdf", combo, width = 9.5, height = 3.3, dpi = 300)
@@ -311,9 +335,8 @@ time_prop <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 
 cat(sprintf("Fixed threshold (percentile): %.1f%% | Numeric cutoff: %.6f\n",
             THRESHOLD_PERCENTILE, disc$threshold))
-cat(sprintf("Edges selected: %d\n", sum(disc$adjacency)))
+cat(sprintf("Edges selected (final): %d\n", sum(disc$adjacency)))
 
-cat("Running LiNGAM baseline...\n")
 ling <- run_lingam(wine)
 
 m_prop <- metrics_directed(disc$adjacency, truth)
@@ -343,6 +366,6 @@ saveRDS(list(scores = disc$scores, threshold = disc$threshold, percentile = THRE
 
 # Smooth plots (the panel you want)
 cat("\nFitting post-hoc univariate GAMs for smooth plots...\n")
-save_smooths(wine)
+save_smooths(wine, show_progress = TRUE)
 
 cat("\nAll done.\nOutputs written to:\n  results/wine_metrics.csv\n  results/adjacency_proposed.csv\n  results/adjacency_lingam.csv\n  results/proposed_scores_threshold.rds\n  figures/wine_smooths.pdf (and .png)\n")
