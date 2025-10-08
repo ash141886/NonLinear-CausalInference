@@ -44,7 +44,7 @@ rbf_kernel <- function(x, sigma) {
   exp(-(d^2) / (2 * sigma^2))
 }
 
-# "legacy": uses pooled distance median once and n^2 denom
+# legacy HSIC (not used by default)
 hsic_legacy <- function(x, y, sigma = NULL) {
   n <- length(x)
   if (is.null(sigma)) {
@@ -57,7 +57,7 @@ hsic_legacy <- function(x, y, sigma = NULL) {
   sum((H %*% Kx %*% H) * Ky) / n^2
 }
 
-# "paper": separate medians per variable + (n-1)^2 denom (matches manuscript)
+# manuscript HSIC ("paper" mode): separate medians + (n-1)^2 denominator
 hsic_paper <- function(x, y) {
   n  <- length(x)
   dx <- as.matrix(dist(as.numeric(x)))
@@ -220,7 +220,7 @@ metrics_directed <- function(est, tru) {
   accuracy  <- (tp + tn) / (n * (n - 1))
   shd       <- sum(abs(est - tru))
   mse       <- mean((est - tru)^2)
-  # Count directed misorientations (edge present both ways but wrong dir)
+  # Count directed misorientations (edge present one way in truth, opposite in est)
   misoriented <- sum(tru == t(est) & tru != est) / 2
   c(Precision = precision, Recall = recall, F1_Score = f1,
     Graph_Accuracy = accuracy, Misoriented = misoriented, SHD = shd, MSE = mse)
