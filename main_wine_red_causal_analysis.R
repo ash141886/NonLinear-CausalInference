@@ -44,6 +44,7 @@ rbf_kernel <- function(x, sigma) {
   exp(-(d^2) / (2 * sigma^2))
 }
 
+# "legacy": uses pooled distance median once and n^2 denom
 hsic_legacy <- function(x, y, sigma = NULL) {
   n <- length(x)
   if (is.null(sigma)) {
@@ -56,6 +57,7 @@ hsic_legacy <- function(x, y, sigma = NULL) {
   sum((H %*% Kx %*% H) * Ky) / n^2
 }
 
+# "paper": separate medians per variable + (n-1)^2 denom (matches manuscript)
 hsic_paper <- function(x, y) {
   n  <- length(x)
   dx <- as.matrix(dist(as.numeric(x)))
@@ -77,7 +79,7 @@ make_hsic <- function(mode = c("legacy","paper")) {
 }
 
 # -----------------------------------------------------------------------------
-# 3) Chemistry-based reference graph
+# 3) Chemistry-based reference graph (for evaluation only; NOT used in tuning)
 # -----------------------------------------------------------------------------
 get_wine_ground_truth <- function(colnames_vec) {
   vars <- colnames_vec
@@ -100,11 +102,10 @@ get_wine_ground_truth <- function(colnames_vec) {
   A["sulphates",            "quality"]              <- 1
   A
 }
-
 truth <- get_wine_ground_truth(colnames(wine))
 
 # -----------------------------------------------------------------------------
-# 4) LOO discovery (+ optional DAG enforcement)
+# 4) LOO discovery (+ DAG enforcement via minimum-score edge removal)
 # -----------------------------------------------------------------------------
 detect_cycle <- function(adjacency) {
   n <- nrow(adjacency); color <- rep(0, n)
@@ -140,9 +141,8 @@ enforce_acyclicity <- function(adjacency, weights) {
 discover_loo <- function(data,
                          hsic_mode = c("legacy","paper"),
                          sigma = NULL,
-                         threshold_percentile = 85,
-                         gam_k_max = 10,
-                         enforce_dag = FALSE,
+                         threshold_percentile = 97.5,
+                         enforce_dag = TRUE,
                          show_progress = TRUE) {
   hsic_fun <- make_hsic(hsic_mode)
   p <- ncol(data); n <- nrow(data); vars <- colnames(data)
@@ -155,6 +155,7 @@ discover_loo <- function(data,
     if (i == j) { if (show_progress) { k_done <- k_done + 1L; setTxtProgressBar(pb, k_done) }; next }
     preds <- setdiff(1:p, c(i, j))
     if (length(preds) > 0) {
+      # small, stable bases; REML smoothing
       k_basis <- min(5, floor(n / 40))
       rhs <- paste0("s(`", vars[preds], "`, k=", k_basis, ")", collapse = " + ")
       fml <- as.formula(paste0("`", vars[i], "` ~ ", rhs))
@@ -173,11 +174,14 @@ discover_loo <- function(data,
   }
   if (show_progress) close(pb)
 
+  # Fixed high-percentile threshold on pooled HSIC scores (no reference used)
   pos <- score[score > 0]
   thr <- as.numeric(quantile(pos, threshold_percentile / 100, na.rm = TRUE))
 
   adj <- matrix(0, p, p, dimnames = list(vars, vars))
   for (i in 1:p) for (j in 1:p) if (i != j && score[i, j] > thr) adj[j, i] <- 1
+
+  # Enforce DAG by removing the minimum-score edge on each detected cycle
   if (enforce_dag) adj <- enforce_acyclicity(adj, score)
 
   list(adjacency = adj, scores = score, threshold = thr)
@@ -201,7 +205,7 @@ run_lingam <- function(data) {
 }
 
 # -----------------------------------------------------------------------------
-# 6) Directed metrics
+# 6) Directed metrics (includes Misoriented, SHD, MSE)
 # -----------------------------------------------------------------------------
 metrics_directed <- function(est, tru) {
   stopifnot(all(dim(est) == dim(tru)))
@@ -209,67 +213,22 @@ metrics_directed <- function(est, tru) {
   tp <- sum(est == 1 & tru == 1)
   fp <- sum(est == 1 & tru == 0)
   fn <- sum(est == 0 & tru == 1)
-  tn <- sum(est == 0 & tru == 0) - n
+  tn <- sum(est == 0 & tru == 0) - n  # exclude diagonals
   precision <- ifelse(tp + fp > 0, tp/(tp+fp), 0)
   recall    <- ifelse(tp + fn > 0, tp/(tp+fn), 0)
   f1        <- ifelse(precision + recall > 0, 2*precision*recall/(precision+recall), 0)
   accuracy  <- (tp + tn) / (n * (n - 1))
   shd       <- sum(abs(est - tru))
   mse       <- mean((est - tru)^2)
+  # Count directed misorientations (edge present both ways but wrong dir)
   misoriented <- sum(tru == t(est) & tru != est) / 2
   c(Precision = precision, Recall = recall, F1_Score = f1,
     Graph_Accuracy = accuracy, Misoriented = misoriented, SHD = shd, MSE = mse)
 }
 
 # -----------------------------------------------------------------------------
-# 7) Hyperparameter tuning
+# 7) Smooth components (robust to spaces in names; univariate plots)
 # -----------------------------------------------------------------------------
-tune_wine <- function(data, truth,
-                      hsic_mode = c("legacy","paper"),
-                      thresholds = c(70, 80, 85, 90, 95),
-                      sigmas = c(NA, 0.5, 1.0, 1.5),
-                      k_grid = c(5, 10, 15),
-                      show_progress = TRUE) {
-  hsic_mode <- match.arg(hsic_mode)
-  best <- list(F1 = -1, threshold = NA, sigma = NA, k = NA)
-
-  grid <- expand.grid(threshold = thresholds, sigma = sigmas, k = k_grid)
-  n_jobs <- nrow(grid)
-  if (show_progress) { pb <- txtProgressBar(min = 0, max = n_jobs, style = 3); j_done <- 0L }
-
-  for (r in 1:n_jobs) {
-    g <- grid[r, ]
-    res <- discover_loo(
-      data,
-      hsic_mode = hsic_mode,
-      sigma = if (hsic_mode == "legacy" && !is.na(g$sigma)) g$sigma else NULL,
-      threshold_percentile = g$threshold,
-      gam_k_max = g$k,
-      enforce_dag = FALSE,
-      show_progress = FALSE
-    )
-    m <- metrics_directed(res$adjacency, truth)
-    if (m["F1_Score"] > best$F1) {
-      best <- list(F1 = m["F1_Score"], threshold = g$threshold,
-                   sigma = if (hsic_mode == "legacy") g$sigma else NA, k = g$k)
-    }
-    if (show_progress) { j_done <- j_done + 1L; setTxtProgressBar(pb, j_done) }
-  }
-  if (show_progress) close(pb)
-
-  cat(sprintf("\nBest tuning: thr=%d  sigma=%s  k=%d  F1=%.3f\n\n",
-              best$threshold,
-              ifelse(hsic_mode == "legacy",
-                     ifelse(is.na(best$sigma), "auto", as.character(best$sigma)), "n/a"),
-              best$k, best$F1))
-  best
-}
-
-# -----------------------------------------------------------------------------
-# 8) Smooth components (robust to spaces in names; univariate plots)
-# -----------------------------------------------------------------------------
-# We fit *univariate* GAMs with syntactic (safe) names, then plot the partials.
-
 make_syn <- function(df) { setNames(df, make.names(colnames(df), unique = TRUE)) }
 
 fit_uni_gam <- function(df_syn, resp_syn, pred_syn, k = 8) {
@@ -331,31 +290,28 @@ save_smooths <- function(orig_df) {
 }
 
 # -----------------------------------------------------------------------------
-# 9) Run: tune → discover → baseline → metrics → save → smooth plots
+# 8) Run: discover (fixed percentile) → baseline → metrics → save → smooth plots
 # -----------------------------------------------------------------------------
-HSIC_MODE <- "legacy"
 
-cat("Tuning parameters...\n")
-best <- tune_wine(
-  data = wine, truth = truth, hsic_mode = HSIC_MODE,
-  thresholds = c(70, 80, 85, 90, 95),
-  sigmas = c(NA, 0.5, 1.0, 1.5),
-  k_grid = c(5, 10, 15),
-  show_progress = TRUE
-)
+HSIC_MODE <- "paper"          # matches manuscript choice
+THRESHOLD_PERCENTILE <- 97.5  # fixed high-percentile on pooled HSIC scores
+ENFORCE_DAG <- TRUE           # break cycles by removing minimum-score edge
 
-cat("Running LOO discovery with tuned parameters...\n")
+cat("Running LOO discovery (fixed high-percentile; no tuning)...\n")
 t0 <- Sys.time()
 disc <- discover_loo(
   wine,
   hsic_mode = HSIC_MODE,
-  sigma = if (HSIC_MODE == "legacy" && !is.na(best$sigma)) best$sigma else NULL,
-  threshold_percentile = best$threshold,
-  gam_k_max = best$k,
-  enforce_dag = FALSE,
+  sigma = NULL,                               # median heuristic inside HSIC
+  threshold_percentile = THRESHOLD_PERCENTILE,
+  enforce_dag = ENFORCE_DAG,
   show_progress = TRUE
 )
 time_prop <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+
+cat(sprintf("Fixed threshold (percentile): %.1f%% | Numeric cutoff: %.6f\n",
+            THRESHOLD_PERCENTILE, disc$threshold))
+cat(sprintf("Edges selected: %d\n", sum(disc$adjacency)))
 
 cat("Running LiNGAM baseline...\n")
 ling <- run_lingam(wine)
@@ -375,14 +331,14 @@ results <- data.frame(
   Runtime_s          = c(time_prop, ling$time)
 )
 
-cat("\n=== Directed Metrics ===\n")
+cat("\n=== Directed Metrics (vs literature-based reference; not used for tuning) ===\n")
 print(format(results, digits = 3), row.names = FALSE)
 
 # Save results
 write.csv(results, "results/wine_metrics.csv", row.names = FALSE)
 write.csv(disc$adjacency, "results/adjacency_proposed.csv")
 write.csv(ling$dag,       "results/adjacency_lingam.csv")
-saveRDS(list(scores = disc$scores, threshold = disc$threshold),
+saveRDS(list(scores = disc$scores, threshold = disc$threshold, percentile = THRESHOLD_PERCENTILE),
         "results/proposed_scores_threshold.rds")
 
 # Smooth plots (the panel you want)
