@@ -1,88 +1,76 @@
 # =============================================================================
-# CORE FUNCTIONS
+# SECTION 3: CAUSAL DISCOVERY ALGORITHM
 # =============================================================================
 
-# RBF Kernel function
-rbf_kernel <- function(x, sigma = 1) {
-    dist_matrix <- as.matrix(dist(x))
-    exp(-dist_matrix^2 / (2 * sigma^2))
+discover_causal_structure <- function(data, sigma = NULL, threshold_percentile = 85) {
+  n_vars <- ncol(data); n_samples <- nrow(data)
+  score_matrix <- matrix(0, n_vars, n_vars)
+  for (i in 1:n_vars) {
+    for (j in 1:n_vars) {
+      if (i == j) next
+      predictors <- setdiff(1:n_vars, c(i, j))
+      if (length(predictors) > 0) {
+        k_basis <- min(5, floor(n_samples/40))
+        formula_str <- paste0("V", i, " ~ ",
+                              paste0("s(V", predictors, ", k=", k_basis, ")", collapse = " + "))
+        model <- tryCatch(
+          suppressWarnings(gam(as.formula(formula_str), data = data, method = "REML", gamma = 1.4)),
+          error = function(e) lm(as.formula(paste0("V", i, " ~ ", paste0("V", predictors, collapse = " + "))), data = data)
+        )
+        residuals_i <- residuals(model)
+      } else {
+        residuals_i <- data[[paste0("V", i)]] - mean(data[[paste0("V", i)]])
+      }
+      score_matrix[i, j] <- hsic(residuals_i, data[[paste0("V", j)]], sigma)
+    }
+  }
+  positive_scores <- score_matrix[score_matrix > 0]
+  threshold <- suppressWarnings(quantile(positive_scores, threshold_percentile/100, na.rm = TRUE))
+  adjacency <- matrix(0, n_vars, n_vars)
+  for (i in 1:n_vars) for (j in 1:n_vars)
+    if (i != j && score_matrix[i, j] > threshold) adjacency[j, i] <- 1
+  enforce_acyclicity(adjacency, score_matrix)
 }
 
-# HSIC function
-hsic <- function(x, y, sigma = NULL) {
-    n <- length(x)
-    if (is.null(sigma)) {
-        dist_matrix <- as.matrix(dist(cbind(x, y)))
-        sigma <- median(dist_matrix[lower.tri(dist_matrix)])
+enforce_acyclicity <- function(adjacency, weights) {
+  n <- nrow(adjacency); iteration <- 0; max_iterations <- n * n
+  repeat {
+    cycle <- detect_cycle(adjacency)
+    if (is.null(cycle) || iteration >= max_iterations) break
+    min_weight <- Inf; weakest_edge <- NULL
+    for (k in seq_along(cycle)) {
+      from_node <- cycle[k]
+      to_node <- cycle[ifelse(k == length(cycle), 1, k + 1)]
+      if (adjacency[from_node, to_node] == 1) {
+        edge_weight <- weights[to_node, from_node]
+        if (edge_weight < min_weight) { min_weight <- edge_weight; weakest_edge <- c(from_node, to_node) }
+      }
     }
-    Kx <- rbf_kernel(as.matrix(x), sigma)
-    Ky <- rbf_kernel(as.matrix(y), sigma)
-    H <- diag(n) - matrix(1/n, n, n)
-    sum(H %*% Kx %*% H * Ky) / n^2
+    if (!is.null(weakest_edge)) adjacency[weakest_edge[1], weakest_edge[2]] <- 0
+    iteration <- iteration + 1
+  }
+  adjacency
 }
 
-# Transitive closure function
-transitive_closure <- function(graph) {
-    n <- nrow(graph)
-    closure <- graph
-    for (k in 1:n) {
-        for (i in 1:n) {
-            for (j in 1:n) {
-                closure[i, j] <- closure[i, j] | (closure[i, k] & closure[k, j])
-            }
-        }
+detect_cycle <- function(adjacency) {
+  n <- nrow(adjacency)
+  color <- rep("white", n); parent <- rep(NA, n)
+  dfs <- function(v) {
+    color[v] <<- "gray"
+    children <- which(adjacency[v, ] == 1)
+    for (u in children) {
+      if (color[u] == "gray") {
+        cycle_path <- c(u); current <- v
+        while (current != u && !is.na(parent[current])) { cycle_path <- c(cycle_path, current); current <- parent[current] }
+        return(cycle_path)
+      }
+      if (color[u] == "white") {
+        parent[u] <<- v
+        cycle <- dfs(u); if (!is.null(cycle)) return(cycle)
+      }
     }
-    closure
-}
-
-
-
-# Proposed Method function
-run_proposed_method <- function(data, sigma = 1, threshold_percentile = 0.3) {
-    n_vars <- ncol(data)
-    hsic_matrix <- matrix(0, n_vars, n_vars)
-    residuals <- vector("list", n_vars)
-    
-    # Step 1: Fit GAM for each variable and extract residuals
-    for (i in 1:n_vars) {
-        formula <- as.formula(paste0("V", i, " ~ ", 
-                                     paste0("s(V", (1:n_vars)[-i], ", k=5)", collapse = " + ")))
-        gam_model <- tryCatch({
-            gam(formula, data = data, method = "REML")
-        }, error = function(e) {
-            cat("Error fitting GAM for variable", i, ":", e$message, "\n")
-            return(NULL)
-        })
-        if (!is.null(gam_model)) {
-            residuals[[i]] <- residuals(gam_model)
-        } else {
-            residuals[[i]] <- rnorm(nrow(data))
-        }
-    }
-    
-    # Step 2: Calculate HSIC between residuals
-    for (i in 1:(n_vars - 1)) {
-        for (j in (i + 1):n_vars) {
-            hsic_matrix[i, j] <- tryCatch({
-                hsic(residuals[[i]], residuals[[j]], sigma)
-            }, error = function(e) {
-                cat("Error in HSIC for variables", i, "and", j, ":", e$message, "\n")
-                return(0)
-            })
-        }
-    }
-    
-    # Step 3: Make symmetric and apply threshold
-    hsic_matrix <- hsic_matrix + t(hsic_matrix)
-    diag(hsic_matrix) <- 1
-    threshold <- quantile(hsic_matrix[lower.tri(hsic_matrix)], threshold_percentile, na.rm = TRUE)
-    proposed_method_dag <- hsic_matrix > threshold
-    
-    proposed_method_dag[lower.tri(proposed_method_dag)] <- 0
-    
-    diag(proposed_method_dag) <- 0
-    
-    # Convert to numeric matrix 
-    result_dag <- matrix(as.numeric(proposed_method_dag), nrow = n_vars, ncol = n_vars)
-    transitive_closure(result_dag)
+    color[v] <<- "black"; NULL
+  }
+  for (v in 1:n) if (color[v] == "white") { cycle <- dfs(v); if (!is.null(cycle)) return(cycle) }
+  NULL
 }
