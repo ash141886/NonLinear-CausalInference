@@ -1,5 +1,5 @@
 # =============================================================================
-# SECTION 7: VISUALIZATION (ALL TEXT PLAIN; DISPLAY + SAVE)
+# SECTION 7: VISUALIZATION 
 # =============================================================================
 
 generate_figures <- function(results,
