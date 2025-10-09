@@ -1,5 +1,5 @@
 # =============================================================================
-# Wine Quality (Red): Full LOO Nonlinear Causal Discovery + Metrics + Smooths
+# Wine Quality (Red): LOO Additive + HSIC Causal Discovery (with Misoriented)
 # =============================================================================
 
 suppressPackageStartupMessages({
@@ -46,7 +46,7 @@ rbf_kernel <- function(x, sigma) {
   exp(-(d^2) / (2 * sigma^2))
 }
 
-# optional legacy HSIC
+# "legacy" HSIC (not used by default; here for completeness)
 hsic_legacy <- function(x, y, sigma = NULL) {
   n <- length(x)
   if (is.null(sigma)) {
@@ -59,7 +59,7 @@ hsic_legacy <- function(x, y, sigma = NULL) {
   sum((H %*% Kx %*% H) * Ky) / n^2
 }
 
-# manuscript HSIC ("paper" mode): separate medians + (n-1)^2 denominator
+# "paper" HSIC: separate medians + (n-1)^2 denominator
 hsic_paper <- function(x, y) {
   n  <- length(x)
   dx <- as.matrix(dist(as.numeric(x)))
@@ -81,7 +81,7 @@ make_hsic <- function(mode = c("legacy","paper")) {
 }
 
 # -----------------------------------------------------------------------------
-# 3) Chemistry-based reference graph (for evaluation only; NOT used in tuning)
+# 3) Literature-based reference graph (for eval only; NOT used in tuning)
 # -----------------------------------------------------------------------------
 get_wine_ground_truth <- function(colnames_vec) {
   vars <- colnames_vec
@@ -97,7 +97,7 @@ get_wine_ground_truth <- function(colnames_vec) {
   A["citric acid",          "pH"]                   <- 1
   A["citric acid",          "fixed acidity"]        <- 1
   A["residual sugar",       "density"]              <- 1
-  A["alcohol",              "density"]              <- 1  # inverse relation in raw scale
+  A["alcohol",              "density"]              <- 1  # inverse in raw scale
   A["free sulfur dioxide",  "total sulfur dioxide"] <- 1
   A["alcohol",              "quality"]              <- 1
   A["volatile acidity",     "quality"]              <- 1
@@ -165,8 +165,7 @@ discover_loo <- function(data,
     if (i == j) { if (show_progress) { k_done <- k_done + 1L; setTxtProgressBar(pb, k_done) }; next }
     preds <- setdiff(1:p, c(i, j))
     if (length(preds) > 0) {
-      # small, stable bases; REML smoothing
-      k_basis <- min(5, floor(n / 40))
+      k_basis <- min(5, floor(n / 40))  # small, stable bases; REML smoothing
       rhs <- paste0("s(`", vars[preds], "`, k=", k_basis, ")", collapse = " + ")
       fml <- as.formula(paste0("`", vars[i], "` ~ ", rhs))
       mdl <- tryCatch(
@@ -237,7 +236,7 @@ metrics_directed <- function(est, tru) {
   accuracy  <- (tp + tn) / (n * (n - 1))
   shd       <- sum(abs(est - tru))
   mse       <- mean((est - tru)^2)
-  # Count directed misorientations (edge present one way in truth, opposite in est)
+  # Directed misorientation: edge j->i in truth but i->j (and not j->i) in estimate
   misoriented <- sum(tru == t(est) & tru != est) / 2
   c(Precision = precision, Recall = recall, F1_Score = f1,
     Graph_Accuracy = accuracy, Misoriented = misoriented, SHD = shd, MSE = mse)
@@ -316,7 +315,6 @@ save_smooths <- function(orig_df, show_progress = TRUE) {
 # -----------------------------------------------------------------------------
 # 8) Run: discover (fixed percentile) → baseline → metrics → save → smooth plots
 # -----------------------------------------------------------------------------
-
 HSIC_MODE <- "paper"          # matches manuscript choice
 THRESHOLD_PERCENTILE <- 97.5  # fixed high-percentile on pooled HSIC scores
 ENFORCE_DAG <- TRUE           # break cycles by removing minimum-score edge
@@ -342,6 +340,7 @@ ling <- run_lingam(wine)
 m_prop <- metrics_directed(disc$adjacency, truth)
 m_ling <- metrics_directed(ling$dag, truth)
 
+# ---- build final table (INCLUDES Misoriented_Edges) --------------------------
 results <- data.frame(
   Method = c("Proposed LOO", "LiNGAM"),
   Precision_Directed = c(m_prop["Precision"], m_ling["Precision"]),
@@ -351,13 +350,14 @@ results <- data.frame(
   Misoriented_Edges  = c(m_prop["Misoriented"],    m_ling["Misoriented"]),
   SHD                = c(m_prop["SHD"],            m_ling["SHD"]),
   MSE                = c(m_prop["MSE"],            m_ling["MSE"]),
-  Runtime_s          = c(time_prop, ling$time)
+  Runtime_s          = c(time_prop, ling$time),
+  check.names = FALSE
 )
 
 cat("\n=== Directed Metrics (vs literature-based reference; not used for tuning) ===\n")
 print(format(results, digits = 3), row.names = FALSE)
 
-# Save results
+# Save results + adjacencies + threshold details
 write.csv(results, "results/wine_metrics.csv", row.names = FALSE)
 write.csv(disc$adjacency, "results/adjacency_proposed.csv")
 write.csv(ling$dag,       "results/adjacency_lingam.csv")
