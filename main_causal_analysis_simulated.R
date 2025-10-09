@@ -12,7 +12,7 @@ suppressPackageStartupMessages({
   library(progress)
 })
 
-# ---- Small helper to pretty-print seconds -----------------------------------
+# ---- Progress Bar -----------------------------------
 .format_secs <- function(s) {
   s <- as.numeric(s)
   if (is.na(s) || !is.finite(s)) return("NA")
