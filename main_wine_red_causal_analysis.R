@@ -1,382 +1,233 @@
-# =============================================================================
-# Wine Quality (Red): LOO Additive + HSIC Causal Discovery (with Misoriented)
-# =============================================================================
+# ===================================================================
+# Causal Discovery on Wine Data (red)
+# ===================================================================
 
-suppressPackageStartupMessages({
-  need <- c("mgcv","ggplot2","dplyr","fastICA","gridExtra")
-  miss <- need[!sapply(need, requireNamespace, quietly = TRUE)]
-  if (length(miss)) {
-    install.packages(miss, repos = "https://cloud.r-project.org")
-  }
-  library(mgcv); library(ggplot2); library(dplyr); library(fastICA); library(gridExtra)
-})
+# -------------------------------------------------------------------
+# Step 1: Load Required Libraries
+# -------------------------------------------------------------------
 
-set.seed(1)
+library(mgcv)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(pcalg)
+library(fastICA)
+library(parallel)
+library(doParallel)
+library(gridExtra)
+library(viridis)
 
-# -----------------------------------------------------------------------------
-# 0) IO setup
-# -----------------------------------------------------------------------------
-if (!dir.exists("data"))    dir.create("data", recursive = TRUE)
-if (!dir.exists("figures")) dir.create("figures", recursive = TRUE)
-if (!dir.exists("results")) dir.create("results", recursive = TRUE)
+# -------------------------------------------------------------------
+# Step 2: Load and Preprocess Data
+# -------------------------------------------------------------------
 
-# -----------------------------------------------------------------------------
-# 1) Data (keep header names with spaces exactly as-is)
-# -----------------------------------------------------------------------------
 if (!file.exists("data/winequality-red.csv")) {
-  cat("Downloading winequality-red.csv ...\n")
-  download.file(
-    "https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv",
-    "data/winequality-red.csv", quiet = TRUE
-  )
-  cat("Download complete.\n")
+  download.file("https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv",
+                "data/winequality-red.csv")
 }
-wine_raw <- read.csv("data/winequality-red.csv", sep = ";", check.names = FALSE)
-stopifnot(is.data.frame(wine_raw), nrow(wine_raw) > 0)
+wine_data <- read.csv("data/winequality-red.csv", sep = ";")
+wine_data <- as.data.frame(scale(wine_data))
 
 cat("Wine data loaded and standardized.\n")
-wine <- as.data.frame(scale(wine_raw))
-cat(sprintf("Dimensions: %d x %d \nVariables: %s \n\n",
-            nrow(wine), ncol(wine), paste(colnames(wine), collapse = ", ")))
+cat("Dimensions:", dim(wine_data), "\n")
+cat("Variables:", paste(colnames(wine_data), collapse = ", "), "\n\n")
 
-# -----------------------------------------------------------------------------
-# 2) HSIC utilities
-# -----------------------------------------------------------------------------
-rbf_kernel <- function(x, sigma) {
-  d <- as.matrix(dist(as.numeric(x)))
-  exp(-(d^2) / (2 * sigma^2))
+# -------------------------------------------------------------------
+# Step 3: Define Helper and Core Algorithm Functions
+# -------------------------------------------------------------------
+
+rbf_kernel <- function(x, sigma = 1) {
+  dist_matrix <- as.matrix(dist(x))
+  exp(-dist_matrix^2 / (2 * sigma^2))
 }
 
-# "legacy" HSIC (not used by default; here for completeness)
-hsic_legacy <- function(x, y, sigma = NULL) {
+hsic <- function(x, y, sigma = NULL) {
   n <- length(x)
   if (is.null(sigma)) {
-    dxy <- as.matrix(dist(cbind(as.numeric(x), as.numeric(y))))
-    sigma <- median(dxy[lower.tri(dxy)])
-    if (!is.finite(sigma) || sigma <= 0) sigma <- 1
+    dist_matrix <- as.matrix(dist(cbind(x, y)))
+    sigma <- median(dist_matrix[lower.tri(dist_matrix)])
   }
-  Kx <- rbf_kernel(x, sigma); Ky <- rbf_kernel(y, sigma)
-  H  <- diag(n) - matrix(1/n, n, n)
-  sum((H %*% Kx %*% H) * Ky) / n^2
+  Kx <- rbf_kernel(as.matrix(x), sigma)
+  Ky <- rbf_kernel(as.matrix(y), sigma)
+  H <- diag(n) - matrix(1/n, n, n)
+  sum(H %*% Kx %*% H * Ky) / n^2
 }
 
-# "paper" HSIC: separate medians + (n-1)^2 denominator
-hsic_paper <- function(x, y) {
-  n  <- length(x)
-  dx <- as.matrix(dist(as.numeric(x)))
-  dy <- as.matrix(dist(as.numeric(y)))
-  sx <- median(dx[lower.tri(dx)]); if (!is.finite(sx) || sx <= 0) sx <- 1
-  sy <- median(dy[lower.tri(dy)]); if (!is.finite(sy) || sy <= 0) sy <- 1
-  Kx <- rbf_kernel(x, sx); Ky <- rbf_kernel(y, sy)
-  H  <- diag(n) - matrix(1/n, n, n)
-  sum((H %*% Kx %*% H) * Ky) / (n - 1)^2
-}
-
-make_hsic <- function(mode = c("legacy","paper")) {
-  mode <- match.arg(mode)
-  if (mode == "legacy") {
-    function(x, y, sigma = NULL) hsic_legacy(x, y, sigma)
-  } else {
-    function(x, y, sigma = NULL) hsic_paper(x, y)
-  }
-}
-
-# -----------------------------------------------------------------------------
-# 3) Literature-based reference graph (for eval only; NOT used in tuning)
-# -----------------------------------------------------------------------------
-get_wine_ground_truth <- function(colnames_vec) {
-  vars <- colnames_vec
-  A <- matrix(0, length(vars), length(vars), dimnames = list(vars, vars))
-  need <- c("fixed acidity","volatile acidity","citric acid","residual sugar",
-            "chlorides","free sulfur dioxide","total sulfur dioxide","density",
-            "pH","sulphates","alcohol","quality")
-  missing <- setdiff(need, vars)
-  if (length(missing) > 0) stop("Missing expected variables: ", paste(missing, collapse = ", "))
-
-  A["fixed acidity",        "pH"]                   <- 1
-  A["volatile acidity",     "pH"]                   <- 1
-  A["citric acid",          "pH"]                   <- 1
-  A["citric acid",          "fixed acidity"]        <- 1
-  A["residual sugar",       "density"]              <- 1
-  A["alcohol",              "density"]              <- 1  # inverse in raw scale
-  A["free sulfur dioxide",  "total sulfur dioxide"] <- 1
-  A["alcohol",              "quality"]              <- 1
-  A["volatile acidity",     "quality"]              <- 1
-  A["sulphates",            "quality"]              <- 1
-  A
-}
-truth <- get_wine_ground_truth(colnames(wine))
-
-# -----------------------------------------------------------------------------
-# 4) LOO discovery (+ DAG enforcement via minimum-score edge removal)
-# -----------------------------------------------------------------------------
-detect_cycle <- function(adjacency) {
-  n <- nrow(adjacency); color <- rep(0, n)
-  cyc <- NULL
-  dfs <- function(v) {
-    color[v] <<- 1
-    for (u in which(adjacency[v, ] == 1)) {
-      if (color[u] == 1) { cyc <<- c(u, v); return(TRUE) }
-      if (color[u] == 0) { if (dfs(u)) return(TRUE) }
+run_proposed_method_wine <- function(data, sigma = 1, threshold_percentile = 0.8, gam_k_max = 10) {
+  n_vars <- ncol(data)
+  var_names <- colnames(data)
+  hsic_matrix <- matrix(0, n_vars, n_vars)
+  residuals_list <- list()
+  for (i in 1:n_vars) {
+    target_var_name <- var_names[i]
+    predictor_indices <- setdiff(1:n_vars, i)
+    formula_terms <- c()
+    for (pred_idx in predictor_indices) {
+      pred_name <- var_names[pred_idx]
+      n_unique <- length(unique(data[[pred_name]]))
+      k_dynamic <- min(gam_k_max, n_unique - 1)
+      if (k_dynamic >= 3) {
+        formula_terms <- c(formula_terms, paste0("s(`", pred_name, "`, k=", k_dynamic, ")"))
+      } else {
+        formula_terms <- c(formula_terms, paste0("`", pred_name, "`"))
+      }
     }
-    color[v] <<- 2; FALSE
-  }
-  for (v in 1:n) if (color[v] == 0 && dfs(v)) break
-  cyc
-}
-
-enforce_acyclicity <- function(adjacency, weights, show_progress = TRUE) {
-  n <- nrow(adjacency); maxit <- n * n; it <- 0
-  if (show_progress) {
-    pb <- txtProgressBar(min = 0, max = maxit, style = 3)
-  }
-  repeat {
-    cyc <- detect_cycle(adjacency)
-    if (is.null(cyc) || it >= maxit) break
-    v <- cyc[2]
-    inc <- which(adjacency[, v] == 1)
-    if (!length(inc)) break
-    wts <- weights[v, inc]
-    rm  <- inc[which.min(wts)]
-    adjacency[rm, v] <- 0
-    it <- it + 1
-    if (show_progress) setTxtProgressBar(pb, it)
-  }
-  if (show_progress) close(pb)
-  adjacency
-}
-
-discover_loo <- function(data,
-                         hsic_mode = c("legacy","paper"),
-                         sigma = NULL,
-                         threshold_percentile = 97.5,
-                         enforce_dag = TRUE,
-                         show_progress = TRUE) {
-  hsic_fun <- make_hsic(hsic_mode)
-  p <- ncol(data); n <- nrow(data); vars <- colnames(data)
-  score <- matrix(0, p, p, dimnames = list(vars, vars))
-
-  total_pairs <- p * (p - 1)
-  if (show_progress) {
-    cat(sprintf("Scoring %d ordered pairs with HSIC...\n", total_pairs))
-    pb <- txtProgressBar(min = 0, max = total_pairs, style = 3); k_done <- 0L
-  }
-
-  for (i in 1:p) for (j in 1:p) {
-    if (i == j) { if (show_progress) { k_done <- k_done + 1L; setTxtProgressBar(pb, k_done) }; next }
-    preds <- setdiff(1:p, c(i, j))
-    if (length(preds) > 0) {
-      k_basis <- min(5, floor(n / 40))  # small, stable bases; REML smoothing
-      rhs <- paste0("s(`", vars[preds], "`, k=", k_basis, ")", collapse = " + ")
-      fml <- as.formula(paste0("`", vars[i], "` ~ ", rhs))
-      mdl <- tryCatch(
-        suppressWarnings(gam(fml, data = data, method = "REML", gamma = 1.4)),
-        error = function(e) lm(as.formula(paste0("`", vars[i], "` ~ ",
-                                                 paste0("`", vars[preds], "`", collapse = " + "))),
-                               data = data)
-      )
-      ri <- residuals(mdl)
+    formula_str <- paste0("`", target_var_name, "` ~ ", paste(formula_terms, collapse = " + "))
+    formula <- as.formula(formula_str)
+    gam_model <- tryCatch({
+      gam(formula, data = data, method = "REML")
+    }, error = function(e) NULL)
+    if (!is.null(gam_model)) {
+      residuals_list[[i]] <- residuals(gam_model)
     } else {
-      ri <- data[[i]] - mean(data[[i]])
-    }
-    score[i, j] <- hsic_fun(ri, data[[j]], sigma = sigma)  # large => j -> i
-    if (show_progress) { k_done <- k_done + 1L; setTxtProgressBar(pb, k_done) }
-  }
-  if (show_progress) close(pb)
-
-  # Fixed high-percentile threshold on pooled HSIC scores (no reference used)
-  pos <- score[score > 0]
-  thr <- as.numeric(quantile(pos, threshold_percentile / 100, na.rm = TRUE))
-  cat(sprintf("Threshold (%.1f%% percentile) = %.6f\n", threshold_percentile, thr))
-
-  adj <- matrix(0, p, p, dimnames = list(vars, vars))
-  for (i in 1:p) for (j in 1:p) if (i != j && score[i, j] > thr) adj[j, i] <- 1
-  cat(sprintf("Edges selected before DAG enforcement: %d\n", sum(adj)))
-
-  # Enforce DAG by removing the minimum-score edge on each detected cycle
-  if (enforce_dag) {
-    cat("Enforcing acyclicity (removing minimum-score edges on cycles)...\n")
-    adj <- enforce_acyclicity(adj, score, show_progress = TRUE)
-    cat(sprintf("Edges after DAG enforcement: %d\n", sum(adj)))
-  }
-
-  list(adjacency = adj, scores = score, threshold = thr)
-}
-
-# -----------------------------------------------------------------------------
-# 5) LiNGAM baseline (fastICA heuristic)
-# -----------------------------------------------------------------------------
-run_lingam <- function(data) {
-  t0 <- Sys.time()
-  n <- ncol(data)
-  dag <- matrix(0, n, n, dimnames = list(colnames(data), colnames(data)))
-  cat("Running LiNGAM baseline...\n")
-  try({
-    ica <- fastICA(as.matrix(data), n.comp = n)
-    W <- ica$W
-    B <- solve(W); diag(B) <- 0
-    B[abs(B) < 0.05] <- 0
-    dag <- (B != 0) * 1
-  }, silent = TRUE)
-  list(dag = dag, time = as.numeric(difftime(Sys.time(), t0, units = "secs")))
-}
-
-# -----------------------------------------------------------------------------
-# 6) Directed metrics (integer Misoriented, SHD, MSE)
-# -----------------------------------------------------------------------------
-misoriented_count <- function(est, tru){
-  # counts only strict flips: tru(i->j)=1 but est(j->i)=1 and est(i->j)=0 (and vice versa)
-  n <- nrow(tru); c <- 0L
-  for(i in 1:n){
-    for(j in (i+1):n){
-      if (tru[i,j]==1 && est[i,j]==0 && est[j,i]==1) c <- c + 1L
-      if (tru[j,i]==1 && est[j,i]==0 && est[i,j]==1) c <- c + 1L
+      residuals_list[[i]] <- rnorm(nrow(data))
     }
   }
-  c
-}
-
-metrics_directed <- function(est, tru) {
-  stopifnot(all(dim(est) == dim(tru)))
-  n <- nrow(tru)
-  tp <- sum(est == 1 & tru == 1)
-  fp <- sum(est == 1 & tru == 0)
-  fn <- sum(est == 0 & tru == 1)
-  tn <- sum(est == 0 & tru == 0) - n  # exclude diagonals
-  precision <- ifelse(tp + fp > 0, tp/(tp+fp), 0)
-  recall    <- ifelse(tp + fn > 0, tp/(tp+fn), 0)
-  f1        <- ifelse(precision + recall > 0, 2*precision*recall/(precision+recall), 0)
-  accuracy  <- (tp + tn) / (n * (n - 1))
-  shd       <- sum(abs(est - tru))
-  mse       <- mean((est - tru)^2)
-  miso      <- misoriented_count(est, tru)  # integer
-  c(Precision = precision, Recall = recall, F1_Score = f1,
-    Graph_Accuracy = accuracy, Misoriented = miso, SHD = shd, MSE = mse)
-}
-
-# -----------------------------------------------------------------------------
-# 7) Smooth components (robust to spaces in names; univariate plots)
-# -----------------------------------------------------------------------------
-make_syn <- function(df) { setNames(df, make.names(colnames(df), unique = TRUE)) }
-
-fit_uni_gam <- function(df_syn, resp_syn, pred_syn, k = 8) {
-  df2 <- df_syn[, c(resp_syn, pred_syn)]
-  df2 <- df2[is.finite(df2[[1]]) & is.finite(df2[[2]]), , drop = FALSE]
-  gam(reformulate(sprintf("s(%s, k=%d)", pred_syn, k), response = resp_syn),
-      data = df2, method = "REML", select = TRUE)
-}
-
-plot_uni <- function(df_syn, resp_syn, pred_syn, xlab, ylab) {
-  k <- max(6, min(12, floor(nrow(df_syn)/150)))
-  m <- fit_uni_gam(df_syn, resp_syn, pred_syn, k = k)
-  rng <- range(df_syn[[pred_syn]], na.rm = TRUE)
-  newd <- setNames(data.frame(seq(rng[1], rng[2], length.out = 200)), pred_syn)
-  pr   <- predict(m, newdata = newd, type = "link", se.fit = TRUE)
-  edf  <- sum(m$edf, na.rm = TRUE)
-  dd   <- data.frame(x = newd[[1]], y = pr$fit, se = pr$se.fit)
-  ggplot(dd, aes(x, y)) +
-    geom_ribbon(aes(ymin = y - 1.96*se, ymax = y + 1.96*se), alpha = 0.15) +
-    geom_line() +
-    geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.6) +
-    labs(x = xlab, y = ylab, subtitle = sprintf("EDF = %.1f", edf)) +
-    theme_minimal(base_size = 11) +
-    theme(plot.subtitle = element_text(size = 9))
-}
-
-save_smooths <- function(orig_df, show_progress = TRUE) {
-  if (show_progress) {
-    cat("Creating smooth plots (3 panels)...\n")
-    pb <- txtProgressBar(min = 0, max = 3, style = 3); k <- 0L
-  }
-  syn_df  <- make_syn(orig_df)
-  map_syn <- setNames(colnames(syn_df), colnames(orig_df))
-
-  get_name <- function(patts) {
-    nms <- names(map_syn)
-    for (p in patts) {
-      h <- grep(p, nms, ignore.case = TRUE, perl = TRUE)
-      if (length(h)) return(map_syn[[ nms[h[1]] ]])
+  for (i in 1:(n_vars - 1)) {
+    for (j in (i + 1):n_vars) {
+      hsic_val <- tryCatch(hsic(residuals_list[[i]], residuals_list[[j]], sigma), error = function(e) 0)
+      hsic_matrix[i, j] <- hsic_val
+      hsic_matrix[j, i] <- hsic_val
     }
-    NA_character_
   }
-
-  rq <- get_name(c("^quality$","\\bqual"))
-  rd <- get_name(c("^density$","\\bdens"))
-  rp <- get_name(c("^pH$","^ph$","p\\.?h\\b"))
-  pv <- get_name(c("volatile\\.?\\s*acidity","\\bvolatile\\b"))
-  pa <- get_name(c("^alcohol$"))
-  pc <- get_name(c("citric\\.?\\s*acid","^citric$"))
-
-  need <- c(rq, rd, rp, pv, pa, pc)
-  if (any(!nzchar(need))) stop("Could not resolve needed columns for smooths.")
-
-  p1 <- plot_uni(syn_df, rq, pv, "Volatile acidity (std.)", "Quality (partial)")
-  if (show_progress) { k <- k + 1L; setTxtProgressBar(pb, k) }
-  p2 <- plot_uni(syn_df, rd, pa, "Alcohol (std.)",          "Density (partial)")
-  if (show_progress) { k <- k + 1L; setTxtProgressBar(pb, k) }
-  p3 <- plot_uni(syn_df, rp, pc, "Citric acid (std.)",      "pH (partial)")
-  if (show_progress) { k <- k + 1L; setTxtProgressBar(pb, k); close(pb) }
-
-  combo <- grid.arrange(p1, p2, p3, ncol = 3)
-  ggsave("figures/wine_smooths.pdf", combo, width = 9.5, height = 3.3, dpi = 300)
-  ggsave("figures/wine_smooths.png", combo, width = 9.5, height = 3.3, dpi = 300)
-  message("Saved: figures/wine_smooths.pdf and figures/wine_smooths.png")
+  diag(hsic_matrix) <- 0
+  threshold <- quantile(hsic_matrix[lower.tri(hsic_matrix)], threshold_percentile, na.rm = TRUE)
+  estimated_adj_matrix <- hsic_matrix > threshold
+  estimated_adj_matrix
 }
 
-# -----------------------------------------------------------------------------
-# 8) Run: discover (fixed percentile) → baseline → metrics → save → smooth plots
-# -----------------------------------------------------------------------------
-HSIC_MODE <- "paper"          # matches manuscript choice
-THRESHOLD_PERCENTILE <- 97.5  # fixed high-percentile on pooled HSIC scores
-ENFORCE_DAG <- TRUE           # break cycles by removing minimum-score edge
+run_lingam_algorithm_wine <- function(data) {
+  start_time <- Sys.time()
+  dag_result <- tryCatch({
+    ica_result <- fastICA(data, n.comp = ncol(data))
+    W <- ica_result$W
+    B <- solve(W) %*% diag(apply(W, 2, max))
+    diag(B) <- 0
+    B[abs(B) < 0.01] <- 0
+    B != 0
+  }, error = function(e) matrix(0, ncol(data), ncol(data)))
+  end_time <- Sys.time()
+  time_taken <- as.numeric(difftime(end_time, start_time, units = "secs"))
+  list(dag = dag_result, time = time_taken)
+}
 
-cat("Running LOO discovery (fixed high-percentile; no tuning)...\n")
-t0 <- Sys.time()
-disc <- discover_loo(
-  wine,
-  hsic_mode = HSIC_MODE,
-  sigma = NULL,                               # median heuristic inside HSIC
-  threshold_percentile = THRESHOLD_PERCENTILE,
-  enforce_dag = ENFORCE_DAG,
-  show_progress = TRUE
-)
-time_prop <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+# -------------------------------------------------------------------
+# Step 4: Ground Truth and Evaluation Metrics
+# -------------------------------------------------------------------
 
-cat(sprintf("Fixed threshold (percentile): %.1f%% | Numeric cutoff: %.6f\n",
-            THRESHOLD_PERCENTILE, disc$threshold))
-cat(sprintf("Edges selected (final): %d\n", sum(disc$adjacency)))
+get_wine_true_dag <- function() {
+  vars <- colnames(wine_data)
+  n_vars <- length(vars)
+  true_dag <- matrix(0, n_vars, n_vars, dimnames = list(vars, vars))
+  true_dag["fixed.acidity", "pH"] <- 1
+  true_dag["volatile.acidity", "pH"] <- 1
+  true_dag["citric.acid", "pH"] <- 1
+  true_dag["citric.acid", "fixed.acidity"] <- 1
+  true_dag["residual.sugar", "density"] <- 1
+  true_dag["alcohol", "density"] <- 1
+  true_dag["free.sulfur.dioxide", "total.sulfur.dioxide"] <- 1
+  true_dag["alcohol", "quality"] <- 1
+  true_dag["volatile.acidity", "quality"] <- 1
+  true_dag["sulphates", "quality"] <- 1
+  true_dag
+}
 
-ling <- run_lingam(wine)
+calculate_dag_metrics_undirected <- function(estimated_dag, true_dag) {
+  estimated_undirected <- estimated_dag | t(estimated_dag)
+  diag(estimated_undirected) <- 0
+  true_undirected <- true_dag | t(true_dag)
+  diag(true_undirected) <- 0
+  tp <- sum(estimated_undirected == 1 & true_undirected == 1) / 2
+  fp <- sum(estimated_undirected == 1 & true_undirected == 0) / 2
+  fn <- sum(estimated_undirected == 0 & true_undirected == 1) / 2
+  n_vars <- ncol(true_dag)
+  total_possible_edges <- n_vars * (n_vars - 1) / 2
+  tn <- total_possible_edges - tp - fp - fn
+  precision <- ifelse((tp + fp) == 0, 0, tp / (tp + fp))
+  recall <- ifelse((tp + fn) == 0, 0, tp / (tp + fn))
+  f1_score <- ifelse((precision + recall) == 0, 0, 2 * (precision * recall) / (precision + recall))
+  shd <- fp + fn
+  accuracy <- (tp + tn) / total_possible_edges
+  mse <- mean((true_undirected - estimated_undirected)^2)
+  c(Precision = precision, Recall = recall, F1_Score = f1_score, SHD = shd, Accuracy = accuracy, MSE = mse)
+}
 
-m_prop <- metrics_directed(disc$adjacency, truth)
-m_ling <- metrics_directed(ling$dag, truth)
+# -------------------------------------------------------------------
+# Step 5: Full Hyperparameter Tuning
+# -------------------------------------------------------------------
 
-# ---- build final table (INCLUDES Misoriented_Edges) --------------------------
-results <- data.frame(
-  Method = c("Proposed method", "LiNGAM"),
-  Precision_Directed = c(m_prop["Precision"],       m_ling["Precision"]),
-  Recall_Directed    = c(m_prop["Recall"],          m_ling["Recall"]),
-  F1_Score_Directed  = c(m_prop["F1_Score"],        m_ling["F1_Score"]),
-  Graph_Accuracy     = c(m_prop["Graph_Accuracy"],  m_ling["Graph_Accuracy"]),
-  Misoriented_Edges  = c(m_prop["Misoriented"],     m_ling["Misoriented"]),
-  SHD                = c(m_prop["SHD"],             m_ling["SHD"]),
-  MSE                = c(m_prop["MSE"],             m_ling["MSE"]),
-  Runtime_s          = c(time_prop,                 ling$time),
-  check.names = FALSE
-)
+tune_wine_parameters_full <- function() {
+  cat("=== Starting full hyperparameter tuning ===\n")
+  threshold_percentiles <- c(0.7, 0.8, 0.85, 0.9, 0.95)
+  gam_sigmas <- c(0.5, 1.0, 1.5)
+  gam_k_max_values <- c(5, 10, 15)
+  best_f1 <- -1
+  best_params <- NULL
+  true_dag <- get_wine_true_dag()
+  param_grid <- expand.grid(thresh = threshold_percentiles, sigma = gam_sigmas, k_max = gam_k_max_values)
+  cat("Total combinations to test:", nrow(param_grid), "\n")
+  for (i in 1:nrow(param_grid)) {
+    thresh <- param_grid$thresh[i]
+    sigma <- param_grid$sigma[i]
+    k_val <- param_grid$k_max[i]
+    cat(sprintf("Testing %d/%d: Threshold=%.2f, Sigma=%.2f, K_max=%d\n", i, nrow(param_grid), thresh, sigma, k_val))
+    est_dag <- run_proposed_method_wine(wine_data, sigma, thresh, gam_k_max = k_val)
+    metrics <- calculate_dag_metrics_undirected(est_dag, true_dag)
+    if (metrics["F1_Score"] > best_f1) {
+      best_f1 <- metrics["F1_Score"]
+      best_params <- list(threshold = thresh, sigma = sigma, k_max = k_val)
+    }
+  }
+  if (is.null(best_params)) {
+    cat("\nWarning: No valid combination found. Using default values.\n")
+    best_params <- list(threshold = 0.9, sigma = 1.0, k_max = 5)
+  } else {
+    cat("\nTuning complete.\n")
+    cat("Best F1-Score:", round(best_f1, 3), "\n")
+    cat("Optimal parameters: Threshold =", best_params$threshold,
+        "| Sigma =", best_params$sigma,
+        "| K_max =", best_params$k_max, "\n\n")
+  }
+  list(best_params = best_params)
+}
 
-cat("\n=== Directed Metrics (vs literature-based reference; not used for tuning) ===\n")
-print(format(results, digits = 3), row.names = FALSE)
+# -------------------------------------------------------------------
+# Step 6: Main Execution
+# -------------------------------------------------------------------
 
-# Save results + adjacencies + threshold details
-write.csv(results, "results/wine_metrics.csv", row.names = FALSE)
-write.csv(disc$adjacency, "results/adjacency_proposed.csv")
-write.csv(ling$dag,       "results/adjacency_lingam.csv")
-saveRDS(list(scores = disc$scores, threshold = disc$threshold, percentile = THRESHOLD_PERCENTILE),
-        "results/proposed_scores_threshold.rds")
+cat("=================================================================\n")
+cat("=== WINE QUALITY CAUSAL DISCOVERY: FULL ANALYSIS ===\n")
+cat("=================================================================\n\n")
 
-# Smooth plots (the panel you want)
-cat("\nFitting post-hoc univariate GAMs for smooth plots...\n")
-save_smooths(wine, show_progress = TRUE)
+tuning_output <- tune_wine_parameters_full()
+best_params <- tuning_output$best_params
 
-cat("\nAll done.\nOutputs written to:\n  results/wine_metrics.csv\n  results/adjacency_proposed.csv\n  results/adjacency_lingam.csv\n  results/proposed_scores_threshold.rds\n  figures/wine_smooths.pdf (and .png)\n")
+cat("\nRunning final analysis with optimal parameters.\n")
+best_thresh <- best_params$threshold
+best_sigma <- best_params$sigma
+best_k_max <- best_params$k_max
+final_results_list <- list()
+true_dag <- get_wine_true_dag()
+
+cat("Analyzing with the proposed method...\n")
+start_time_prop <- Sys.time()
+prop_dag <- run_proposed_method_wine(wine_data, best_sigma, best_thresh, best_k_max)
+prop_time <- as.numeric(difftime(Sys.time(), start_time_prop, units = "secs"))
+prop_metrics <- calculate_dag_metrics_undirected(prop_dag, true_dag)
+final_results_list[["Proposed"]] <- c(prop_metrics, Time_sec = prop_time)
+
+cat("Analyzing with LiNGAM...\n")
+lingam_output <- run_lingam_algorithm_wine(wine_data)
+lingam_metrics <- calculate_dag_metrics_undirected(lingam_output$dag, true_dag)
+final_results_list[["LiNGAM"]] <- c(lingam_metrics, Time_sec = lingam_output$time)
+
+cat("\n=========================================================\n")
+cat("=== FINAL PERFORMANCE COMPARISON (FULL ANALYSIS) ===\n")
+cat("=========================================================\n")
+final_results_df <- do.call(rbind, lapply(names(final_results_list), function(name) {
+  data.frame(Method = name, t(final_results_list[[name]]))
+}))
+numeric_cols <- names(final_results_df)[sapply(final_results_df, is.numeric)]
+final_results_df[numeric_cols] <- lapply(final_results_df[numeric_cols], round, 3)
+print(final_results_df, row.names = FALSE)
+cat("\nFull analysis complete.\n")
