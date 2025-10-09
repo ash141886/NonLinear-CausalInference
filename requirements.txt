@@ -11,5 +11,6 @@ install.packages(c(
   "parallel",
   "doParallel",
   "gridExtra",
-  "viridis"
+  "viridis",
+  "progress"
 ))
