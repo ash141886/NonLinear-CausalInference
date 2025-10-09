@@ -11,6 +11,16 @@ suppressPackageStartupMessages({
   library(dplyr)
 })
 
+# ---- Small helper to pretty-print seconds -----------------------------------
+.format_secs <- function(s) {
+  s <- as.numeric(s)
+  if (is.na(s) || !is.finite(s)) return("NA")
+  h <- floor(s / 3600); m <- floor((s %% 3600) / 60); sec <- round(s %% 60)
+  paste0(if (h > 0) sprintf("%dh ", h) else "",
+         if (m > 0) sprintf("%dm ", m) else "",
+         sprintf("%ds", sec))
+}
+
 # =============================================================================
 # SECTION 1: KERNEL-BASED INDEPENDENCE TESTING
 # =============================================================================
@@ -215,12 +225,18 @@ evaluate_performance <- function(estimated, truth) {
 }
 
 # =============================================================================
-# SECTION 6: SIMULATION FRAMEWORK
+# SECTION 6: SIMULATION FRAMEWORK (with progress bar + ETA)
 # =============================================================================
 
 conduct_simulation_study <- function(variable_sizes, sample_sizes, replications = 50,
                                      nonlinearity = 0.5, sparsity = 0.3, noise_level = 0.5) {
   complete_results <- data.frame()
+
+  total_iters <- length(variable_sizes) * length(sample_sizes) * replications
+  pb <- utils::txtProgressBar(min = 0, max = total_iters, style = 3)
+  iter_done <- 0L
+  t0 <- Sys.time()
+
   for (n_vars in variable_sizes) {
     for (n_samples in sample_sizes) {
       for (rep in 1:replications) {
@@ -230,16 +246,31 @@ conduct_simulation_study <- function(variable_sizes, sample_sizes, replications 
         )
         data <- data_generation$data
         true_graph <- data_generation$true_dag
-        if (sum(true_graph) == 0) next
+        if (sum(true_graph) == 0) {
+          # still count this replication to keep progress consistent
+          iter_done <- iter_done + 1L
+          utils::setTxtProgressBar(pb, iter_done)
+          # quick ETA print
+          elapsed <- difftime(Sys.time(), t0, units = "secs")
+          rate <- as.numeric(elapsed) / max(iter_done, 1)
+          rem <- (total_iters - iter_done) * rate
+          cat(sprintf("  | %d/%d  elapsed: %s  ETA: %s\r",
+                      iter_done, total_iters, .format_secs(elapsed), .format_secs(rem)))
+          next
+        }
+
         time_start <- Sys.time()
         estimated_proposed <- tryCatch(
           discover_causal_structure(data, sigma = NULL, threshold_percentile = 85),
           error = function(e) matrix(0, n_vars, n_vars)
         )
         time_proposed <- as.numeric(difftime(Sys.time(), time_start, units = "secs"))
+
         metrics_proposed <- evaluate_performance(estimated_proposed, true_graph)
+
         lingam_output <- lingam_discovery(data)
         metrics_lingam <- evaluate_performance(lingam_output$dag, true_graph)
+
         iteration_results <- rbind(
           data.frame(Method = "Proposed Method", Variables = n_vars, Samples = n_samples,
                      Replication = rep, Time = time_proposed, t(metrics_proposed)),
@@ -247,9 +278,21 @@ conduct_simulation_study <- function(variable_sizes, sample_sizes, replications 
                      Replication = rep, Time = lingam_output$time, t(metrics_lingam))
         )
         complete_results <- rbind(complete_results, iteration_results)
+
+        # ---- progress update ----
+        iter_done <- iter_done + 1L
+        utils::setTxtProgressBar(pb, iter_done)
+        elapsed <- difftime(Sys.time(), t0, units = "secs")
+        rate <- as.numeric(elapsed) / max(iter_done, 1)
+        rem <- (total_iters - iter_done) * rate
+        cat(sprintf("  | %d/%d  elapsed: %s  ETA: %s\r",
+                    iter_done, total_iters, .format_secs(elapsed), .format_secs(rem)))
       }
     }
   }
+  close(pb)
+  cat(sprintf("\nCompleted %d iterations in %s.\n", total_iters, .format_secs(difftime(Sys.time(), t0, units = "secs"))))
+
   aggregated_results <- complete_results %>%
     group_by(Method, Variables, Samples) %>%
     summarise(across(c(Precision_dir, Recall_dir, F1_Score_dir,
@@ -344,3 +387,4 @@ generate_figures(simulation_results)
 
 saveRDS(simulation_results, file = "causal_discovery_results.rds")
 write.csv(simulation_results$summary, file = "summary_statistics.csv", row.names = FALSE)
+s
