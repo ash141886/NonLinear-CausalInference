@@ -61,7 +61,8 @@ pkgs_needed <- c(
   "parallel",
   "gridExtra",
   "mgcv",
-  "fastICA"
+  "fastICA",
+   "progress"
 )
 for (pkg in pkgs_needed) {
   if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
