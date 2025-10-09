@@ -34,9 +34,10 @@ if (!file.exists("data/winequality-red.csv")) {
 wine_raw <- read.csv("data/winequality-red.csv", sep = ";", check.names = FALSE)
 stopifnot(is.data.frame(wine_raw), nrow(wine_raw) > 0)
 
-cat("Columns found:\n  ", paste(colnames(wine_raw), collapse = ", "), "\n")
+cat("Wine data loaded and standardized.\n")
 wine <- as.data.frame(scale(wine_raw))
-cat(sprintf("Wine Quality (red): %d samples x %d variables\n\n", nrow(wine), ncol(wine)))
+cat(sprintf("Dimensions: %d x %d \nVariables: %s \n\n",
+            nrow(wine), ncol(wine), paste(colnames(wine), collapse = ", ")))
 
 # -----------------------------------------------------------------------------
 # 2) HSIC utilities
@@ -221,8 +222,20 @@ run_lingam <- function(data) {
 }
 
 # -----------------------------------------------------------------------------
-# 6) Directed metrics (includes Misoriented, SHD, MSE)
+# 6) Directed metrics (integer Misoriented, SHD, MSE)
 # -----------------------------------------------------------------------------
+misoriented_count <- function(est, tru){
+  # counts only strict flips: tru(i->j)=1 but est(j->i)=1 and est(i->j)=0 (and vice versa)
+  n <- nrow(tru); c <- 0L
+  for(i in 1:n){
+    for(j in (i+1):n){
+      if (tru[i,j]==1 && est[i,j]==0 && est[j,i]==1) c <- c + 1L
+      if (tru[j,i]==1 && est[j,i]==0 && est[i,j]==1) c <- c + 1L
+    }
+  }
+  c
+}
+
 metrics_directed <- function(est, tru) {
   stopifnot(all(dim(est) == dim(tru)))
   n <- nrow(tru)
@@ -236,10 +249,9 @@ metrics_directed <- function(est, tru) {
   accuracy  <- (tp + tn) / (n * (n - 1))
   shd       <- sum(abs(est - tru))
   mse       <- mean((est - tru)^2)
-  # Directed misorientation: edge j->i in truth but i->j (and not j->i) in estimate
-  misoriented <- sum(tru == t(est) & tru != est) / 2
+  miso      <- misoriented_count(est, tru)  # integer
   c(Precision = precision, Recall = recall, F1_Score = f1,
-    Graph_Accuracy = accuracy, Misoriented = misoriented, SHD = shd, MSE = mse)
+    Graph_Accuracy = accuracy, Misoriented = miso, SHD = shd, MSE = mse)
 }
 
 # -----------------------------------------------------------------------------
@@ -276,7 +288,6 @@ save_smooths <- function(orig_df, show_progress = TRUE) {
     cat("Creating smooth plots (3 panels)...\n")
     pb <- txtProgressBar(min = 0, max = 3, style = 3); k <- 0L
   }
-  # map original to syntactic
   syn_df  <- make_syn(orig_df)
   map_syn <- setNames(colnames(syn_df), colnames(orig_df))
 
@@ -342,15 +353,15 @@ m_ling <- metrics_directed(ling$dag, truth)
 
 # ---- build final table (INCLUDES Misoriented_Edges) --------------------------
 results <- data.frame(
-  Method = c("Proposed LOO", "LiNGAM"),
-  Precision_Directed = c(m_prop["Precision"], m_ling["Precision"]),
-  Recall_Directed    = c(m_prop["Recall"],    m_ling["Recall"]),
-  F1_Score_Directed  = c(m_prop["F1_Score"],  m_ling["F1_Score"]),
-  Graph_Accuracy     = c(m_prop["Graph_Accuracy"], m_ling["Graph_Accuracy"]),
-  Misoriented_Edges  = c(m_prop["Misoriented"],    m_ling["Misoriented"]),
-  SHD                = c(m_prop["SHD"],            m_ling["SHD"]),
-  MSE                = c(m_prop["MSE"],            m_ling["MSE"]),
-  Runtime_s          = c(time_prop, ling$time),
+  Method = c("Proposed method", "LiNGAM"),
+  Precision_Directed = c(m_prop["Precision"],       m_ling["Precision"]),
+  Recall_Directed    = c(m_prop["Recall"],          m_ling["Recall"]),
+  F1_Score_Directed  = c(m_prop["F1_Score"],        m_ling["F1_Score"]),
+  Graph_Accuracy     = c(m_prop["Graph_Accuracy"],  m_ling["Graph_Accuracy"]),
+  Misoriented_Edges  = c(m_prop["Misoriented"],     m_ling["Misoriented"]),
+  SHD                = c(m_prop["SHD"],             m_ling["SHD"]),
+  MSE                = c(m_prop["MSE"],             m_ling["MSE"]),
+  Runtime_s          = c(time_prop,                 ling$time),
   check.names = FALSE
 )
 
