@@ -1,5 +1,5 @@
 # =============================================================================
-# Nonlinear Causal Discovery: Additive Models with Kernel-based Independence Testing 
+# Nonlinear Causal Discovery: Additive Models with Kernel-based Independence Testing  
 # =============================================================================
 
 suppressPackageStartupMessages({
