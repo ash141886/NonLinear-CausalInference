@@ -9,6 +9,7 @@ suppressPackageStartupMessages({
   library(gridExtra)
   library(grid)
   library(dplyr)
+  library(progress) # MODIFICATION: Added progress library
 })
 
 # ---- Small helper to pretty-print seconds -----------------------------------
@@ -49,9 +50,9 @@ hsic <- function(x, y, sigma = NULL) {
 # SECTION 2: DATA GENERATION MECHANISM
 # =============================================================================
 
-generate_nonlinear_sem_data <- function(n_vars, n_samples = 1000, 
-                                        nonlinearity = 0.5, sparsity = 0.3, 
-                                        noise_level = 0.5, seed = 123) {
+generate_nonlinear_sem_data <- function(n_vars, n_samples = 1000,
+                                      nonlinearity = 0.5, sparsity = 0.3,
+                                      noise_level = 0.5, seed = 123) {
   set.seed(seed)
   true_dag <- matrix(0, n_vars, n_vars)
   data <- matrix(0, nrow = n_samples, ncol = n_vars)
@@ -228,14 +229,20 @@ evaluate_performance <- function(estimated, truth) {
 # SECTION 6: SIMULATION FRAMEWORK (with progress bar + ETA)
 # =============================================================================
 
+# MODIFICATION: This entire function is updated to use the 'progress' package
 conduct_simulation_study <- function(variable_sizes, sample_sizes, replications = 50,
                                      nonlinearity = 0.5, sparsity = 0.3, noise_level = 0.5) {
   complete_results <- data.frame()
+  t0 <- Sys.time()
 
   total_iters <- length(variable_sizes) * length(sample_sizes) * replications
-  pb <- utils::txtProgressBar(min = 0, max = total_iters, style = 3)
-  iter_done <- 0L
-  t0 <- Sys.time()
+  
+  # New progress bar setup with custom tokens
+  pb <- progress_bar$new(
+    format = "Simulating -> Vars: :vars, Samples: :samps [:bar] :percent | ETA: :eta",
+    total = total_iters,
+    width = 90
+  )
 
   for (n_vars in variable_sizes) {
     for (n_samples in sample_sizes) {
@@ -246,17 +253,11 @@ conduct_simulation_study <- function(variable_sizes, sample_sizes, replications 
         )
         data <- data_generation$data
         true_graph <- data_generation$true_dag
+        
         if (sum(true_graph) == 0) {
-          # still count this replication to keep progress consistent
-          iter_done <- iter_done + 1L
-          utils::setTxtProgressBar(pb, iter_done)
-          # quick ETA print
-          elapsed <- difftime(Sys.time(), t0, units = "secs")
-          rate <- as.numeric(elapsed) / max(iter_done, 1)
-          rem <- (total_iters - iter_done) * rate
-          cat(sprintf("  | %d/%d  elapsed: %s  ETA: %s\r",
-                      iter_done, total_iters, .format_secs(elapsed), .format_secs(rem)))
-          next
+           # Still tick the bar even if we skip this iteration
+           pb$tick(tokens = list(vars = n_vars, samps = n_samples))
+           next
         }
 
         time_start <- Sys.time()
@@ -279,18 +280,12 @@ conduct_simulation_study <- function(variable_sizes, sample_sizes, replications 
         )
         complete_results <- rbind(complete_results, iteration_results)
 
-        # ---- progress update ----
-        iter_done <- iter_done + 1L
-        utils::setTxtProgressBar(pb, iter_done)
-        elapsed <- difftime(Sys.time(), t0, units = "secs")
-        rate <- as.numeric(elapsed) / max(iter_done, 1)
-        rem <- (total_iters - iter_done) * rate
-        cat(sprintf("  | %d/%d  elapsed: %s  ETA: %s\r",
-                    iter_done, total_iters, .format_secs(elapsed), .format_secs(rem)))
+        # Update the progress bar with current variable and sample sizes
+        pb$tick(tokens = list(vars = n_vars, samps = n_samples))
       }
     }
   }
-  close(pb)
+
   cat(sprintf("\nCompleted %d iterations in %s.\n", total_iters, .format_secs(difftime(Sys.time(), t0, units = "secs"))))
 
   aggregated_results <- complete_results %>%
@@ -301,8 +296,9 @@ conduct_simulation_study <- function(variable_sizes, sample_sizes, replications 
   list(detailed = complete_results, summary = aggregated_results)
 }
 
+
 # =============================================================================
-# SECTION 7: VISUALIZATION 
+# SECTION 7: VISUALIZATION
 # =============================================================================
 
 generate_figures <- function(results,
@@ -364,7 +360,7 @@ generate_figures <- function(results,
     }
 
     g <- gridExtra::arrangeGrob(p_samples, p_variables, nrow = 2)
-    print(g)  # display on-screen in interactive sessions
+    print(g)
     ggsave(paste0("figures/", metric, ".pdf"), g, width = 12, height = 8, dpi = 300)
     ggsave(paste0("figures/", metric, ".png"), g, width = 12, height = 8, dpi = 300)
   }
@@ -387,4 +383,3 @@ generate_figures(simulation_results)
 
 saveRDS(simulation_results, file = "causal_discovery_results.rds")
 write.csv(simulation_results$summary, file = "summary_statistics.csv", row.names = FALSE)
-s
