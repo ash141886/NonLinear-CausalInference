@@ -9,7 +9,7 @@ suppressPackageStartupMessages({
   library(gridExtra)
   library(grid)
   library(dplyr)
-  library(progress) 
+  library(progress)
 })
 
 # ---- Small helper to pretty-print seconds -----------------------------------
@@ -51,12 +51,15 @@ hsic <- function(x, y, sigma = NULL) {
 # =============================================================================
 
 generate_nonlinear_sem_data <- function(n_vars, n_samples = 1000,
-                                      nonlinearity = 0.5, sparsity = 0.3,
-                                      noise_level = 0.5, seed = 123) {
+                                        nonlinearity = 0.5, sparsity = 0.3,
+                                        noise_level = 0.5, seed = 123) {
   set.seed(seed)
   true_dag <- matrix(0, n_vars, n_vars)
   data <- matrix(0, nrow = n_samples, ncol = n_vars)
+
+  # non-Gaussian root
   data[, 1] <- rexp(n_samples, rate = 1) - 1
+
   for (i in 2:n_vars) {
     potential_parents <- 1:(i - 1)
     if (length(potential_parents) == 1) {
@@ -65,8 +68,10 @@ generate_nonlinear_sem_data <- function(n_vars, n_samples = 1000,
       n_parents <- max(1, rbinom(1, length(potential_parents), 1 - sparsity))
       selected_parents <- sample(potential_parents, n_parents)
     }
+
     for (parent in selected_parents) true_dag[parent, i] <- 1
-    effects <- rep(0, n_samples)
+
+    effects <- numeric(n_samples)
     for (parent in selected_parents) {
       if (runif(1) < nonlinearity) {
         transform_func <- sample(list(
@@ -82,12 +87,15 @@ generate_nonlinear_sem_data <- function(n_vars, n_samples = 1000,
         effects <- effects + coefficient * data[, parent]
       }
     }
+
     nd <- sample(1:3, 1)
     noise <- if (nd == 1) rexp(n_samples, rate = 1/noise_level) - noise_level
       else if (nd == 2) rt(n_samples, df = 5) * noise_level
       else runif(n_samples, -1, 1) * noise_level
+
     data[, i] <- effects + noise
   }
+
   colnames(data) <- paste0("V", 1:n_vars)
   list(data = as.data.frame(scale(data)), true_dag = true_dag)
 }
@@ -99,9 +107,11 @@ generate_nonlinear_sem_data <- function(n_vars, n_samples = 1000,
 discover_causal_structure <- function(data, sigma = NULL, threshold_percentile = 85) {
   n_vars <- ncol(data); n_samples <- nrow(data)
   score_matrix <- matrix(0, n_vars, n_vars)
+
   for (i in 1:n_vars) {
     for (j in 1:n_vars) {
       if (i == j) next
+
       predictors <- setdiff(1:n_vars, c(i, j))
       if (length(predictors) > 0) {
         k_basis <- min(5, floor(n_samples/40))
@@ -109,20 +119,25 @@ discover_causal_structure <- function(data, sigma = NULL, threshold_percentile =
                               paste0("s(V", predictors, ", k=", k_basis, ")", collapse = " + "))
         model <- tryCatch(
           suppressWarnings(gam(as.formula(formula_str), data = data, method = "REML", gamma = 1.4)),
-          error = function(e) lm(as.formula(paste0("V", i, " ~ ", paste0("V", predictors, collapse = " + "))), data = data)
+          error = function(e) lm(as.formula(paste0("V", i, " ~ ", paste0("V", predictors, collapse = " + "))),
+                                 data = data)
         )
         residuals_i <- residuals(model)
       } else {
         residuals_i <- data[[paste0("V", i)]] - mean(data[[paste0("V", i)]])
       }
+
       score_matrix[i, j] <- hsic(residuals_i, data[[paste0("V", j)]], sigma)
     }
   }
+
   positive_scores <- score_matrix[score_matrix > 0]
   threshold <- suppressWarnings(quantile(positive_scores, threshold_percentile/100, na.rm = TRUE))
+
   adjacency <- matrix(0, n_vars, n_vars)
   for (i in 1:n_vars) for (j in 1:n_vars)
     if (i != j && score_matrix[i, j] > threshold) adjacency[j, i] <- 1
+
   enforce_acyclicity(adjacency, score_matrix)
 }
 
@@ -131,6 +146,7 @@ enforce_acyclicity <- function(adjacency, weights) {
   repeat {
     cycle <- detect_cycle(adjacency)
     if (is.null(cycle) || iteration >= max_iterations) break
+
     min_weight <- Inf; weakest_edge <- NULL
     for (k in seq_along(cycle)) {
       from_node <- cycle[k]
@@ -140,6 +156,7 @@ enforce_acyclicity <- function(adjacency, weights) {
         if (edge_weight < min_weight) { min_weight <- edge_weight; weakest_edge <- c(from_node, to_node) }
       }
     }
+
     if (!is.null(weakest_edge)) adjacency[weakest_edge[1], weakest_edge[2]] <- 0
     iteration <- iteration + 1
   }
@@ -149,6 +166,7 @@ enforce_acyclicity <- function(adjacency, weights) {
 detect_cycle <- function(adjacency) {
   n <- nrow(adjacency)
   color <- rep("white", n); parent <- rep(NA, n)
+
   dfs <- function(v) {
     color[v] <<- "gray"
     children <- which(adjacency[v, ] == 1)
@@ -165,7 +183,10 @@ detect_cycle <- function(adjacency) {
     }
     color[v] <<- "black"; NULL
   }
-  for (v in 1:n) if (color[v] == "white") { cycle <- dfs(v); if (!is.null(cycle)) return(cycle) }
+
+  for (v in 1:n) if (color[v] == "white") {
+    cycle <- dfs(v); if (!is.null(cycle)) return(cycle)
+  }
   NULL
 }
 
@@ -209,18 +230,21 @@ evaluate_performance <- function(estimated, truth) {
   true_positives <- sum(estimated == 1 & truth == 1)
   false_positives <- sum(estimated == 1 & truth == 0)
   false_negatives <- sum(estimated == 0 & truth == 1)
-  true_negatives <- sum(estimated == 0 & truth == 0) - n
+  true_negatives <- sum(estimated == 0 & truth == 0) - n  # exclude diagonals
+
   misoriented <- 0
   for (i in 1:n) for (j in 1:n) if (i < j) {
     if (truth[i, j] == 1 && estimated[j, i] == 1 && estimated[i, j] == 0) misoriented <- misoriented + 1
     else if (truth[j, i] == 1 && estimated[i, j] == 1 && estimated[j, i] == 0) misoriented <- misoriented + 1
   }
+
   precision <- ifelse((true_positives + false_positives) > 0, true_positives / (true_positives + false_positives), 0)
   recall    <- ifelse((true_positives + false_negatives) > 0, true_positives / (true_positives + false_negatives), 0)
   f1_score  <- ifelse((precision + recall) > 0, 2 * precision * recall / (precision + recall), 0)
   accuracy  <- (true_positives + true_negatives) / (n * (n - 1))
   structural_hamming <- sum(abs(estimated - truth))
   mse <- mean((estimated - truth)^2)
+
   c(Precision_dir = precision, Recall_dir = recall, F1_Score_dir = f1_score,
     Graph_Accuracy = accuracy, Misoriented = misoriented, SHD = structural_hamming, MSE = mse)
 }
@@ -229,15 +253,13 @@ evaluate_performance <- function(estimated, truth) {
 # SECTION 6: SIMULATION FRAMEWORK (with progress bar + ETA)
 # =============================================================================
 
-# MODIFICATION: This entire function is updated to use the 'progress' package
 conduct_simulation_study <- function(variable_sizes, sample_sizes, replications = 50,
                                      nonlinearity = 0.5, sparsity = 0.3, noise_level = 0.5) {
   complete_results <- data.frame()
   t0 <- Sys.time()
 
   total_iters <- length(variable_sizes) * length(sample_sizes) * replications
-  
-  # New progress bar setup with custom tokens
+
   pb <- progress_bar$new(
     format = "Simulating -> Vars: :vars, Samples: :samps [:bar] :percent | ETA: :eta",
     total = total_iters,
@@ -247,17 +269,17 @@ conduct_simulation_study <- function(variable_sizes, sample_sizes, replications 
   for (n_vars in variable_sizes) {
     for (n_samples in sample_sizes) {
       for (rep in 1:replications) {
+
         data_generation <- generate_nonlinear_sem_data(
           n_vars, n_samples, nonlinearity, sparsity, noise_level,
           seed = rep * 1000 + n_vars * 10 + n_samples
         )
         data <- data_generation$data
         true_graph <- data_generation$true_dag
-        
+
         if (sum(true_graph) == 0) {
-           # Still tick the bar even if we skip this iteration
-           pb$tick(tokens = list(vars = n_vars, samps = n_samples))
-           next
+          pb$tick(tokens = list(vars = n_vars, samps = n_samples))
+          next
         }
 
         time_start <- Sys.time()
@@ -280,25 +302,28 @@ conduct_simulation_study <- function(variable_sizes, sample_sizes, replications 
         )
         complete_results <- rbind(complete_results, iteration_results)
 
-        # Update the progress bar with current variable and sample sizes
         pb$tick(tokens = list(vars = n_vars, samps = n_samples))
       }
     }
   }
 
-  cat(sprintf("\nCompleted %d iterations in %s.\n", total_iters, .format_secs(difftime(Sys.time(), t0, units = "secs"))))
+  cat(sprintf("\nCompleted %d iterations in %s.\n",
+              total_iters, .format_secs(difftime(Sys.time(), t0, units = "secs"))))
 
   aggregated_results <- complete_results %>%
-    group_by(Method, Variables, Samples) %>%
-    summarise(across(c(Precision_dir, Recall_dir, F1_Score_dir,
-                       Graph_Accuracy, Misoriented, SHD, MSE, Time),
-                     mean, na.rm = TRUE), .groups = 'drop')
+    dplyr::group_by(Method, Variables, Samples) %>%
+    dplyr::summarise(
+      dplyr::across(c(Precision_dir, Recall_dir, F1_Score_dir,
+                      Graph_Accuracy, Misoriented, SHD, MSE, Time),
+                    \(x) mean(x, na.rm = TRUE)),
+      .groups = "drop"
+    )
+
   list(detailed = complete_results, summary = aggregated_results)
 }
 
-
 # =============================================================================
-# SECTION 7: VISUALIZATION
+# SECTION 7: VISUALIZATION (force display in RStudio + save files)
 # =============================================================================
 
 generate_figures <- function(results,
@@ -309,13 +334,17 @@ generate_figures <- function(results,
                              strip_size = 9,
                              legend_title_size = 9,
                              legend_text_size = 8) {
+
   if (!dir.exists("figures")) dir.create("figures", recursive = TRUE)
+
   method_colors <- c("LiNGAM" = "#E31A1C", "Proposed Method" = "#1F78B4")
   method_shapes <- c("LiNGAM" = 16, "Proposed Method" = 17)
   method_lines  <- c("LiNGAM" = "solid", "Proposed Method" = "dashed")
-  metrics_to_plot <- c("Precision_dir", "F1_Score_dir", "Graph_Accuracy", "Misoriented", "SHD", "MSE", "Time")
-  plain_theme <- theme_minimal(base_size = base_size) +
-    theme(
+  metrics_to_plot <- c("Precision_dir", "F1_Score_dir", "Graph_Accuracy",
+                       "Misoriented", "SHD", "MSE", "Time")
+
+  plain_theme <- ggplot2::theme_minimal(base_size = base_size) +
+    ggplot2::theme(
       text            = element_text(face = "plain"),
       plot.title      = element_text(size = title_size, face = "plain", hjust = 0.5),
       axis.title      = element_text(size = axis_title_size, face = "plain"),
@@ -327,7 +356,9 @@ generate_figures <- function(results,
       strip.text      = element_text(size = strip_size, face = "plain"),
       panel.grid.minor= element_blank()
     )
+
   for (metric in metrics_to_plot) {
+
     p_samples <- ggplot(results$summary,
                         aes(x = Samples, y = .data[[metric]],
                             color = Method, shape = Method, linetype = Method)) +
@@ -359,8 +390,10 @@ generate_figures <- function(results,
       p_variables <- p_variables + scale_y_continuous(limits = c(0, 1))
     }
 
-    g <- gridExtra::arrangeGrob(p_samples, p_variables, nrow = 2)
-    print(g)
+    # ---- Draw directly to the current device (RStudioGD -> Plots pane) ----
+    g <- gridExtra::grid.arrange(p_samples, p_variables, nrow = 2)
+
+    # ---- Save files (reuse the grob returned above) ----
     ggsave(paste0("figures/", metric, ".pdf"), g, width = 12, height = 8, dpi = 300)
     ggsave(paste0("figures/", metric, ".png"), g, width = 12, height = 8, dpi = 300)
   }
@@ -371,7 +404,7 @@ generate_figures <- function(results,
 # =============================================================================
 
 simulation_results <- conduct_simulation_study(
-  variable_sizes = c(4, 5,6,7),
+  variable_sizes = c(4, 5, 6, 7),
   sample_sizes   = c(200, 250, 300, 350),
   replications   = 1,
   nonlinearity   = 0.5,
