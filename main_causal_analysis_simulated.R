@@ -9,7 +9,7 @@ suppressPackageStartupMessages({
   library(gridExtra)
   library(grid)
   library(dplyr)
-  library(progress) # MODIFICATION: Added progress library
+  library(progress) 
 })
 
 # ---- Small helper to pretty-print seconds -----------------------------------
