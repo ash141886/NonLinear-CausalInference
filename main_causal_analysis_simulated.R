@@ -371,9 +371,9 @@ generate_figures <- function(results,
 # =============================================================================
 
 simulation_results <- conduct_simulation_study(
-  variable_sizes = c(4, 8, 12, 15),
-  sample_sizes   = c(400, 800, 1200, 1500),
-  replications   = 50,
+  variable_sizes = c(4, 5,6,7),
+  sample_sizes   = c(200, 250, 300, 350),
+  replications   = 1,
   nonlinearity   = 0.5,
   sparsity       = 0.3,
   noise_level    = 0.5
