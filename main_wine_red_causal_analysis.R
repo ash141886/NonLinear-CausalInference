@@ -62,69 +62,94 @@ hsic <- function(x, y, sigma = NULL) {
   sum((H %*% Kx %*% H) * Ky) / (n - 1)^2
 }
 
-# ---- Proposed (DIRECTED, HSIC residual → predictor like in simulation) ----
-run_proposed_method_wine <- function(data, sigma = NULL, threshold_percentile = 0.85, gam_k_max = 10) {
+# ---- Your original undirected approach (kept for tuning + main scores) ----
+run_proposed_method_wine <- function(data, sigma = 1, threshold_percentile = 0.8, gam_k_max = 10) {
+  n_vars <- ncol(data)
+  var_names <- colnames(data)
+  hsic_matrix <- matrix(0, n_vars, n_vars)
+  residuals_list <- vector("list", n_vars)
+
+  # fit one GAM per variable with all others as predictors
+  for (i in 1:n_vars) {
+    target_var_name <- var_names[i]
+    predictor_indices <- setdiff(1:n_vars, i)
+    formula_terms <- character(0)
+    for (pred_idx in predictor_indices) {
+      pred_name <- var_names[pred_idx]
+      n_unique <- length(unique(data[[pred_name]]))
+      k_dynamic <- min(gam_k_max, n_unique - 1)
+      if (is.finite(k_dynamic) && k_dynamic >= 3) {
+        formula_terms <- c(formula_terms, paste0("s(`", pred_name, "`, k=", k_dynamic, ")"))
+      } else {
+        formula_terms <- c(formula_terms, paste0("`", pred_name, "`"))
+      }
+    }
+    formula_str <- paste0("`", target_var_name, "` ~ ", paste(formula_terms, collapse = " + "))
+    gam_model <- tryCatch(
+      gam(as.formula(formula_str), data = data, method = "REML"),
+      error = function(e) NULL
+    )
+    residuals_list[[i]] <- if (!is.null(gam_model)) residuals(gam_model) else rnorm(nrow(data))
+  }
+
+  # symmetric HSIC(res_i, res_j)
+  for (i in 1:(n_vars - 1)) {
+    for (j in (i + 1):n_vars) {
+      hsic_val <- tryCatch(hsic(residuals_list[[i]], residuals_list[[j]], sigma), error = function(e) 0)
+      hsic_matrix[i, j] <- hsic_val
+      hsic_matrix[j, i] <- hsic_val
+    }
+  }
+  diag(hsic_matrix) <- 0
+
+  # percentile threshold on lower-tri
+  thr <- suppressWarnings(quantile(hsic_matrix[lower.tri(hsic_matrix)], threshold_percentile, na.rm = TRUE))
+  estimated_adj_matrix <- hsic_matrix > thr
+  estimated_adj_matrix
+}
+
+# ---- Directed variant (needed to count Misoriented) ------------------------
+# For each ordered pair (i,j): fit i ~ all except j; HSIC(resid_i, X_j) → score j->i
+run_proposed_method_wine_directed <- function(data, sigma = NULL, threshold_percentile = 0.85, gam_k_max = 10) {
   stopifnot(threshold_percentile > 0 && threshold_percentile < 1)
   n_vars    <- ncol(data)
   n_samples <- nrow(data)
   var_names <- colnames(data)
 
-  score_matrix <- matrix(0, n_vars, n_vars,
-                         dimnames = list(var_names, var_names))
+  score_matrix <- matrix(0, n_vars, n_vars, dimnames = list(var_names, var_names))
 
   for (i in 1:n_vars) {
     for (j in 1:n_vars) {
       if (i == j) next
-
       predictors <- setdiff(1:n_vars, c(i, j))
       if (length(predictors) > 0) {
-        # dynamic k to keep GAM stable on real data
         k_basis <- min(gam_k_max, max(3, floor(n_samples / 40)))
         terms <- paste0("s(`", var_names[predictors], "`, k=", k_basis, ")")
         fml <- as.formula(paste0("`", var_names[i], "` ~ ", paste(terms, collapse = " + ")))
-        model <- tryCatch(
-          suppressWarnings(gam(fml, data = data, method = "REML", gamma = 1.4)),
-          error = function(e) NULL
-        )
+        model <- tryCatch(suppressWarnings(gam(fml, data = data, method = "REML", gamma = 1.4)),
+                          error = function(e) NULL)
         resid_i <- if (!is.null(model)) residuals(model) else scale(data[[i]], scale = FALSE)
       } else {
         resid_i <- data[[i]] - mean(data[[i]])
       }
-
-      # HSIC between residual of i (with j excluded) and raw X_j → directional j -> i
-      score_matrix[i, j] <- tryCatch(
-        hsic(resid_i, data[[j]], sigma),
-        error = function(e) 0
-      )
+      score_matrix[i, j] <- tryCatch(hsic(resid_i, data[[j]], sigma), error = function(e) 0)
     }
   }
-
-  # Threshold on positive scores over all ordered pairs
   positive_scores <- as.numeric(score_matrix[score_matrix > 0])
-  thr <- if (length(positive_scores)) {
-    as.numeric(quantile(positive_scores, probs = threshold_percentile, na.rm = TRUE))
-  } else Inf
-
+  thr <- if (length(positive_scores)) as.numeric(quantile(positive_scores, probs = threshold_percentile, na.rm = TRUE)) else Inf
   est_adj <- matrix(0, n_vars, n_vars, dimnames = list(var_names, var_names))
-  if (is.finite(thr)) {
-    est_adj[score_matrix > thr] <- 1
-  }
-  # optional: you could enforce acyclicity here if desired
-
+  if (is.finite(thr)) est_adj[score_matrix > thr] <- 1
   est_adj
 }
 
 run_lingam_algorithm_wine <- function(data) {
   start_time <- Sys.time()
   dag_result <- tryCatch({
-    ica <- fastICA(as.matrix(data), n.comp = ncol(data),
-                   alg.typ = "parallel", fun = "logcosh",
-                   method = "C", verbose = FALSE)
-    W <- ica$W
+    ica_result <- fastICA(as.matrix(data), n.comp = ncol(data),
+                          alg.typ = "parallel", fun = "logcosh", method = "C", verbose = FALSE)
+    W <- ica_result$W
     A <- tryCatch(solve(W), error = function(e) MASS::ginv(W))
-    B <- A
-    diag(B) <- 0
-    # simple threshold
+    B <- A; diag(B) <- 0
     B[abs(B) < 0.01] <- 0
     (abs(B) > 0) * 1
   }, error = function(e) matrix(0, ncol(data), ncol(data)))
@@ -154,7 +179,7 @@ get_wine_true_dag <- function() {
   true_dag
 }
 
-# Undirected metrics (as you had)
+# Undirected metrics (your original definition)
 calculate_dag_metrics_undirected <- function(estimated_dag, true_dag) {
   estimated_undirected <- (estimated_dag | t(estimated_dag)) * 1
   diag(estimated_undirected) <- 0
@@ -179,15 +204,13 @@ calculate_dag_metrics_undirected <- function(estimated_dag, true_dag) {
     SHD = shd, Accuracy = accuracy, MSE = mse)
 }
 
-# NEW: Misoriented edges metric (directional)
+# NEW: Misoriented edges (directional mismatch count)
 calculate_misoriented_edges <- function(estimated_dag, true_dag) {
   stopifnot(identical(dim(estimated_dag), dim(true_dag)))
   n <- nrow(true_dag)
   mis <- 0L
   for (i in 1:n) {
     for (j in 1:n) if (i < j) {
-      # Count an error when exactly one direction is present in truth,
-      # but the estimated puts the edge in the opposite direction only.
       if (true_dag[i, j] == 1 && true_dag[j, i] == 0 && estimated_dag[j, i] == 1 && estimated_dag[i, j] == 0) {
         mis <- mis + 1L
       } else if (true_dag[j, i] == 1 && true_dag[i, j] == 0 && estimated_dag[i, j] == 1 && estimated_dag[j, i] == 0) {
@@ -199,21 +222,21 @@ calculate_misoriented_edges <- function(estimated_dag, true_dag) {
 }
 
 # -------------------------------------------------------------------
-# Step 5: Full Hyperparameter Tuning (Proposed)
+# Step 5: Full Hyperparameter Tuning (Proposed, undirected like yours)
 # -------------------------------------------------------------------
 
 tune_wine_parameters_full <- function() {
   cat("=== Starting full hyperparameter tuning ===\n")
-  threshold_percentiles <- c(0.70, 0.80, 0.85, 0.90, 0.95)  # probs in (0,1)
-  gam_sigmas            <- c(0.5, 1.0, 1.5)                 # passed to HSIC
+  threshold_percentiles <- c(0.70, 0.80, 0.85, 0.90, 0.95)
+  gam_sigmas            <- c(0.5, 1.0, 1.5)
   gam_k_max_values      <- c(5, 10, 15)
 
   best_f1 <- -1
   best_params <- NULL
   true_dag <- get_wine_true_dag()
   param_grid <- expand.grid(thresh = threshold_percentiles,
-                            sigma = gam_sigmas,
-                            k_max = gam_k_max_values)
+                            sigma  = gam_sigmas,
+                            k_max  = gam_k_max_values)
   cat("Total combinations to test:", nrow(param_grid), "\n")
 
   for (i in 1:nrow(param_grid)) {
@@ -264,14 +287,19 @@ best_k_max  <- best_params$k_max
 final_results_list <- list()
 true_dag <- get_wine_true_dag()
 
-cat("Analyzing with the Proposed method (directional)…\n")
+cat("Analyzing with the Proposed method…\n")
 t0 <- Sys.time()
-prop_dag <- run_proposed_method_wine(wine_data, sigma = best_sigma,
-                                     threshold_percentile = best_thresh,
-                                     gam_k_max = best_k_max)
+# Undirected for main scores (as before)
+prop_dag_undir <- run_proposed_method_wine(wine_data, sigma = best_sigma,
+                                           threshold_percentile = best_thresh,
+                                           gam_k_max = best_k_max)
+# Directed for Misoriented
+prop_dag_dir <- run_proposed_method_wine_directed(wine_data, sigma = best_sigma,
+                                                  threshold_percentile = best_thresh,
+                                                  gam_k_max = best_k_max)
 prop_time <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
-prop_metrics <- calculate_dag_metrics_undirected(prop_dag, true_dag)
-prop_mis <- calculate_misoriented_edges(prop_dag, true_dag)
+prop_metrics <- calculate_dag_metrics_undirected(prop_dag_undir, true_dag)
+prop_mis <- calculate_misoriented_edges(prop_dag_dir, true_dag)
 final_results_list[["Proposed"]] <- c(prop_metrics, Misoriented = prop_mis, Time_sec = prop_time)
 
 cat("Analyzing with LiNGAM…\n")
@@ -286,12 +314,10 @@ cat("=========================================================\n")
 final_results_df <- do.call(rbind, lapply(names(final_results_list), function(name) {
   data.frame(Method = name, t(final_results_list[[name]]))
 }))
-numeric_cols <- names(final_results_df)[sapply(final_results_df, is.numeric)]
-final_results_df[numeric_cols] <- lapply(final_results_df[numeric_cols], function(v) {
-  # don't round SHD, Misoriented (integers); round the rest
-  nm <- names(v)
-  if (is.null(nm)) return(round(v, 3))
-  round(v, 3)
+# Round numeric columns except integer-like counts
+num_cols <- names(final_results_df)[sapply(final_results_df, is.numeric)]
+final_results_df[num_cols] <- lapply(final_results_df[num_cols], function(v) {
+  if (all(abs(v - round(v)) < .Machine$double.eps^0.5)) v else round(v, 3)
 })
 print(final_results_df, row.names = FALSE)
 
